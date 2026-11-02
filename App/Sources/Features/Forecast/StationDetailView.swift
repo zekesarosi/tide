@@ -1,6 +1,7 @@
 import SwiftUI
 import TideKit
 
+@MainActor
 struct StationDetailView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(AppSettings.self) private var settings
@@ -48,7 +49,7 @@ struct StationDetailView: View {
                 }
                 .accessibilityLabel(settings.isFavorite(station) ? "Remove favorite" : "Add favorite")
             }
-            ToolbarItem(placement: .status) {
+            ToolbarItem(placement: .topBarLeading) {
                 if model.phase == .loading && model.forecast != nil { ProgressView().controlSize(.small) }
             }
         }
@@ -141,7 +142,7 @@ struct NowCard: View {
                 if let r = forecast.currentResidual {
                     VStack(alignment: .trailing, spacing: 2) {
                         Text(Fmt.length(r.value, unit, signed: true)).font(.title3.weight(.semibold))
-                            .foregroundStyle(abs(r.value) > 0.3 ? .orange : .primary)
+                            .foregroundStyle(abs(r.value) > 0.3 ? Color.orange : Color.primary)
                         Text("vs. predicted").font(.caption).foregroundStyle(.secondary)
                     }
                 }
