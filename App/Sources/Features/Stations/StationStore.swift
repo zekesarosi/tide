@@ -7,7 +7,9 @@ import TideKit
 @MainActor
 @Observable
 final class StationStore {
-    private(set) var stations: [Station] = []
+    private(set) var stations: [Station] = [] { didSet { grouped = Self.group(stations) } }
+    /// Stations grouped by state/province for the browse list.
+    private(set) var grouped: [(region: String, stations: [Station])] = []
     private(set) var isLoading = false
     private(set) var sourceProblems: [SourceStatus] = []
     private(set) var lastRefresh: Date?
@@ -19,6 +21,7 @@ final class StationStore {
     init() {
         if let cached = cache.load() {
             stations = cached.stations
+            grouped = Self.group(cached.stations)
             lastRefresh = cached.saved
         }
     }
@@ -53,8 +56,7 @@ final class StationStore {
             .map { $0 }
     }
 
-    /// Stations grouped by state/province for the browse list.
-    var grouped: [(region: String, stations: [Station])] {
+    private static func group(_ stations: [Station]) -> [(region: String, stations: [Station])] {
         Dictionary(grouping: stations) { s -> String in
             let r = s.region ?? ""
             return r.isEmpty ? DataSourceInfo.info(s.source).agency : r

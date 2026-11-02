@@ -11,7 +11,7 @@ struct TideLineChart: View {
     let tz: TimeZone
 
     enum Window: String, CaseIterable, Identifiable {
-        case day = "Today", twoDays = "2 days", week = "Week"
+        case day = "Today", twoDays = "2 days", week = "All"
         var id: String { rawValue }
     }
 
@@ -60,53 +60,62 @@ struct TideLineChart: View {
 
     // MARK: Data
 
-    private func points(_ s: TimeSeries, _ layer: Layer, maxPoints: Int = 400) -> [Point] {
-        let inside = s.points.filter { domain.contains($0.date) }
-        let stride = Swift.max(1, inside.count / maxPoints)
-        return inside.enumerated().compactMap { i, p in
-            i % stride == 0
-                ? Point(id: "\(layer.rawValue)\(p.date.timeIntervalSince1970)", date: p.date, value: unit.fromMeters(p.value))
-                : nil
+    /// Everything the chart draws, built once per body pass (scrubbing
+    /// re-runs the body on every move).
+    struct Series {
+        let domain: ClosedRange<Date>
+        let observed: [Point]
+        let forecast: [Point]
+        let predicted: [Point]
+        let band: [Band]
+        let waterline: [Point]
+        let yDomain: ClosedRange<Double>
+        let minor: Double?
+        let ticks: [Date]
+    }
+
+    private func makeSeries() -> Series {
+        let d = domain
+        func pts(_ s: TimeSeries, _ layer: Layer, maxPoints: Int = 400) -> [Point] {
+            let inside = s.points.filter { d.contains($0.date) }
+            let stride = Swift.max(1, inside.count / maxPoints)
+            return inside.enumerated().compactMap { i, p in
+                i % stride == 0
+                    ? Point(id: "\(layer.rawValue)\(p.date.timeIntervalSince1970)", date: p.date, value: unit.fromMeters(p.value))
+                    : nil
+            }
         }
-    }
-
-    private var observed: [Point] { points(forecast.observed, .observed) }
-    private var forecastLine: [Point] { points(forecast.total, .forecast) }
-    private var predicted: [Point] { points(forecast.astronomical, .predicted, maxPoints: 300) }
-
-    private var band: [Band] {
-        zip(forecast.totalLower.points, forecast.totalUpper.points)
-            .filter { domain.contains($0.0.date) }
+        let obs = pts(forecast.observed, .observed)
+        let fc = pts(forecast.total, .forecast)
+        let pred = pts(forecast.astronomical, .predicted, maxPoints: 300)
+        let band = zip(forecast.totalLower.points, forecast.totalUpper.points)
+            .filter { d.contains($0.0.date) }
             .map { Band(date: $0.0.date, low: unit.fromMeters($0.0.value), high: unit.fromMeters($0.1.value)) }
-    }
+        let cut = fc.first?.date ?? forecast.issued
+        let water = obs.filter { $0.date < cut } + fc
+        let minor = forecast.thresholds?.minor.map(unit.fromMeters)
 
-    /// Observed up to now, then the forecast: the water surface we fill under.
-    private var waterline: [Point] {
-        let cut = forecastLine.first?.date ?? forecast.issued
-        return observed.filter { $0.date < cut } + forecastLine
-    }
+        var yd: ClosedRange<Double> = 0...1
+        let values = (water + pred).map(\.value) + band.flatMap { [$0.low, $0.high] }
+        if var lo = values.min(), var hi = values.max(), lo < hi {
+            if let minor, minor - hi < (hi - lo) * 0.6 { hi = Swift.max(hi, minor) }
+            let pad = (hi - lo) * 0.1
+            lo -= pad
+            hi += pad
+            yd = lo...hi
+        }
 
-    private var minorFlood: Double? { forecast.thresholds?.minor.map(unit.fromMeters) }
-
-    private var yDomain: ClosedRange<Double> {
-        let values = (waterline + predicted).map(\.value) + band.flatMap { [$0.low, $0.high] }
-        guard var lo = values.min(), var hi = values.max(), lo < hi else { return 0...1 }
-        if let minor = minorFlood, minor - hi < (hi - lo) * 0.6 { hi = Swift.max(hi, minor) }
-        let pad = (hi - lo) * 0.1
-        lo -= pad
-        hi += pad
-        return lo...hi
-    }
-
-    private var ticks: [Date] {
         let step = window == .week ? 24 : (window == .twoDays ? 12 : 6)
-        var out: [Date] = []
-        var t = calendar.startOfDay(for: domain.lowerBound)
-        while t <= domain.upperBound {
-            if t >= domain.lowerBound { out.append(t) }
+        var ticks: [Date] = []
+        var t = calendar.startOfDay(for: d.lowerBound)
+        while t <= d.upperBound {
+            if t >= d.lowerBound { ticks.append(t) }
             t = calendar.date(byAdding: .hour, value: step, to: t) ?? t + Double(step) * 3_600
         }
-        return out
+        // Only draw the flood rule when it falls inside the plot.
+        let visibleMinor = minor.flatMap { yd.contains($0) ? $0 : nil }
+        return Series(domain: d, observed: obs, forecast: fc, predicted: pred, band: band, waterline: water,
+                      yDomain: yd, minor: visibleMinor, ticks: ticks)
     }
 
     private func tickLabel(_ d: Date) -> String {
@@ -116,15 +125,28 @@ struct TideLineChart: View {
         return d.formatted(Date.FormatStyle(timeZone: tz).hour())
     }
 
+    private static let layerColors: [Color] = [
+        Theme.harbor.opacity(0.08), Theme.swellBand.opacity(0.24), Theme.floodLine.opacity(0.3),
+        Theme.tideTable, Theme.swell, Theme.harbor,
+    ]
+
+    /// The level at the "now" dot: the forecast, or a fresh observation.
+    private var nowLevel: Double? {
+        if let v = forecast.total.value(at: forecast.issued, maxGap: 3_600) { return v }
+        if let o = forecast.observed.last, forecast.issued.timeIntervalSince(o.date) < 3_600 { return o.value }
+        return nil
+    }
+
     // MARK: Body
 
     var body: some View {
+        let series = makeSeries()
         VStack(alignment: .leading, spacing: 10) {
-            chart
+            chart(series)
                 .frame(height: 210)
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: window)
                 .accessibilityLabel("Water level chart")
-                .accessibilityValue(accessibilitySummary)
+                .accessibilityValue(accessibilitySummary(series.domain))
 
             Group {
                 if let selection {
@@ -144,30 +166,24 @@ struct TideLineChart: View {
         }
     }
 
-    private var chart: some View {
-        let base: Double = yDomain.lowerBound
+    private func chart(_ s: Series) -> some View {
+        let base: Double = s.yDomain.lowerBound
         let now: Date = forecast.issued
-        let nowLevel: Double? = forecast.total.value(at: now, maxGap: 3_600) ?? forecast.observed.last?.value
-        let water: [Point] = waterline
-        let fc: [Point] = forecastLine
-        let obs: [Point] = observed
-        let pred: [Point] = predicted
-        let range: [Band] = band
-        let minor: Double? = minorFlood
+        let level: Double? = nowLevel
 
         return Chart {
-            ForEach(water) { p in
+            ForEach(s.waterline) { p in
                 AreaMark(x: .value("Time", p.date), yStart: .value("Base", base), yEnd: .value("Level", p.value))
                     .foregroundStyle(by: .value("Layer", Layer.water.rawValue))
                     .interpolationMethod(.monotone)
             }
-            ForEach(range) { r in
+            ForEach(s.band) { r in
                 AreaMark(x: .value("Time", r.date), yStart: .value("Low", r.low), yEnd: .value("High", r.high))
                     .foregroundStyle(by: .value("Layer", Layer.band.rawValue))
                     .interpolationMethod(.monotone)
             }
-            if let minor {
-                ForEach(fc) { p in
+            if let minor = s.minor {
+                ForEach(s.forecast) { p in
                     AreaMark(x: .value("Time", p.date), yStart: .value("Flood", minor), yEnd: .value("Level", Swift.max(p.value, minor)))
                         .foregroundStyle(by: .value("Layer", Layer.flooding.rawValue))
                         .interpolationMethod(.monotone)
@@ -182,29 +198,29 @@ struct TideLineChart: View {
                             .padding(.trailing, Theme.margin)
                     }
             }
-            ForEach(pred) { p in
+            ForEach(s.predicted) { p in
                 LineMark(x: .value("Time", p.date), y: .value("Level", p.value), series: .value("Series", Layer.predicted.rawValue))
                     .foregroundStyle(by: .value("Layer", Layer.predicted.rawValue))
                     .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [3, 3]))
                     .interpolationMethod(.monotone)
             }
-            ForEach(fc) { p in
+            ForEach(s.forecast) { p in
                 LineMark(x: .value("Time", p.date), y: .value("Level", p.value), series: .value("Series", Layer.forecast.rawValue))
                     .foregroundStyle(by: .value("Layer", Layer.forecast.rawValue))
                     .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
                     .interpolationMethod(.monotone)
             }
-            ForEach(obs) { p in
+            ForEach(s.observed) { p in
                 LineMark(x: .value("Time", p.date), y: .value("Level", p.value), series: .value("Series", Layer.observed.rawValue))
                     .foregroundStyle(by: .value("Layer", Layer.observed.rawValue))
                     .lineStyle(StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round))
                     .interpolationMethod(.monotone)
             }
-            if domain.contains(now) {
+            if s.domain.contains(now) {
                 RuleMark(x: .value("Now", now))
                     .foregroundStyle(Theme.ink.opacity(0.18))
                     .lineStyle(StrokeStyle(lineWidth: 1))
-                if let level = nowLevel {
+                if let level {
                     PointMark(x: .value("Now", now), y: .value("Level", unit.fromMeters(level)))
                         .symbol {
                             NowDot()
@@ -216,16 +232,13 @@ struct TideLineChart: View {
                     .foregroundStyle(Theme.ink.opacity(0.35))
             }
         }
-        .chartForegroundStyleScale(domain: Layer.allCases.map(\.rawValue), range: [
-            Theme.harbor.opacity(0.08), Theme.swellBand.opacity(0.24), Theme.floodLine.opacity(0.3),
-            Theme.tideTable, Theme.swell, Theme.harbor,
-        ])
+        .chartForegroundStyleScale(domain: Layer.allCases.map(\.rawValue), range: Self.layerColors)
         .chartLegend(.hidden)
-        .chartXScale(domain: domain)
-        .chartYScale(domain: yDomain)
+        .chartXScale(domain: s.domain)
+        .chartYScale(domain: s.yDomain)
         .chartYAxis(.hidden)
         .chartXAxis {
-            AxisMarks(values: ticks) { value in
+            AxisMarks(values: s.ticks) { value in
                 AxisGridLine().foregroundStyle(Theme.hairline)
                 AxisValueLabel {
                     if let d = value.as(Date.self) {
@@ -245,7 +258,7 @@ struct TideLineChart: View {
         }
     }
 
-    private var accessibilitySummary: String {
+    private func accessibilitySummary(_ domain: ClosedRange<Date>) -> String {
         guard let peak = forecast.total.sliced(from: domain.lowerBound, to: domain.upperBound).maximum else { return "" }
         return "Highest forecast \(Fmt.length(peak.value, unit)) at \(Fmt.smartTime(peak.date, in: tz))."
     }
@@ -321,6 +334,8 @@ struct SurgeChartView: View {
     let unit: LengthUnit
     let tz: TimeZone
 
+    private static let colors: [Color] = [Theme.swellBand.opacity(0.24), Theme.harbor, Theme.swell, Theme.inkSecondary]
+
     var body: some View {
         Chart {
             ForEach(forecast.surge) { s in
@@ -345,8 +360,7 @@ struct SurgeChartView: View {
             RuleMark(y: .value("Tide table", 0.0)).foregroundStyle(Theme.tideTable.opacity(0.6))
             RuleMark(x: .value("Now", forecast.issued)).foregroundStyle(Theme.ink.opacity(0.18))
         }
-        .chartForegroundStyleScale(domain: ["Range", "Observed", "Forecast", "NWS official"],
-                                   range: [Theme.swellBand.opacity(0.24), Theme.harbor, Theme.swell, Theme.inkSecondary])
+        .chartForegroundStyleScale(domain: ["Range", "Observed", "Forecast", "NWS official"], range: Self.colors)
         .chartYAxisLabel(unit.symbol)
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 5)) { value in

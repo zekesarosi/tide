@@ -102,9 +102,11 @@ struct StationDetailView: View {
 
     @ViewBuilder
     private func content(_ f: WaterLevelForecast) -> some View {
-        callouts(f)
-            .padding(.horizontal, Theme.margin)
-            .padding(.top, 14)
+        if !f.nearbyStorms.isEmpty || !f.alerts.isEmpty || model.floodRiskEvent != nil {
+            callouts(f)
+                .padding(.horizontal, Theme.margin)
+                .padding(.top, 14)
+        }
 
         hero(f)
             .padding(.horizontal, Theme.margin)
@@ -134,7 +136,7 @@ struct StationDetailView: View {
 
         if let point = model.componentsNow {
             VStack(alignment: .leading, spacing: 12) {
-                SectionLabel(point.surge >= 0 ? "Why the water is high" : "Why the water is low")
+                SectionLabel((model.anomalyNow ?? point.surge) >= 0 ? "Why the water is high" : "Why the water is low")
                 if let sentence = model.driverSentence {
                     Text(sentence).font(.subheadline).foregroundStyle(Theme.ink)
                 }
@@ -216,7 +218,7 @@ struct StationDetailView: View {
                 if let next = f.events.first {
                     HStack(spacing: 8) {
                         if let rising = model.trendRising { TrendArrow(rising: rising) }
-                        (Text("\(model.trendRising == true ? "Rising" : "Falling") · \(Phrase.eventName(next.kind).lowercased()) ")
+                        (Text("\(model.trendRising.map { $0 ? "Rising · " : "Falling · " } ?? "Next ")\(Phrase.eventName(next.kind).lowercased()) ")
                             + Text(Fmt.length(next.total, unit)).fontWeight(.semibold)
                             + Text(" at \(Fmt.smartTime(next.date, in: tz, relativeTo: f.issued))"))
                             .font(.callout)

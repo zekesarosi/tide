@@ -11,8 +11,9 @@ struct StationListView: View {
     @Environment(LocationProvider.self) private var location
     @State private var query = ""
     @State private var favorites = FavoritesModel()
+    @State private var nearby: [(station: Station, meters: Double)] = []
 
-    private var favoriteStations: [Station] { settings.favoriteIDs.compactMap(store.station(id:)) }
+    private var favoriteStations: [Station] { settings.favoriteIDs.compactMap { store.station(id: $0) } }
 
     var body: some View {
         ScrollView {
@@ -39,6 +40,11 @@ struct StationListView: View {
         .refreshable {
             await store.load(service: env.service, force: true)
             await favorites.refresh(favoriteStations, service: env.service, options: settings.forecastOptions, force: true)
+        }
+        .task(id: location.location.map { "\(Int($0.coordinate.latitude * 100)),\(Int($0.coordinate.longitude * 100)),\(store.stations.count)" }) {
+            guard let loc = location.location else { return }
+            nearby = store.nearest(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude, limit: 3)
+                .map { (station: $0.0, meters: $0.1) }
         }
         .task(id: settings.favoriteIDs) {
             favorites.loadSaved(favoriteStations)
@@ -92,11 +98,10 @@ struct StationListView: View {
     @ViewBuilder private var nearbySection: some View {
         SectionLabel("Nearby").padding(.horizontal, 4).padding(.top, 10)
         GroupCard {
-            if let loc = location.location {
-                let near = store.nearest(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude, limit: 3)
-                ForEach(Array(near.enumerated()), id: \.element.0.id) { i, pair in
+            if location.location != nil, !nearby.isEmpty {
+                ForEach(Array(nearby.enumerated()), id: \.element.station.id) { i, pair in
                     if i > 0 { Divider().overlay(Theme.hairline).padding(.leading, 16) }
-                    StationRow(station: pair.0, trailing: Fmt.distance(pair.1))
+                    StationRow(station: pair.station, trailing: Fmt.distance(pair.meters))
                 }
             } else if location.isDenied {
                 Text("Location is off. Turn it on in Settings to see stations near you.")
