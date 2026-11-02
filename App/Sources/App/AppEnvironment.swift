@@ -17,9 +17,8 @@ final class AppEnvironment {
         identity = AppIdentity.fromBundle()
         // Keychain first (user-entered keys), then optional build-time
         // defaults injected via Config/Secrets.xcconfig → Info.plist.
-        credentials = LayeredCredentialStore(
-            primary: KeychainCredentialStore(service: (Bundle.main.bundleIdentifier ?? "tide") + ".credentials"),
-            fallbacks: [BundleCredentialStore()])
+        // The Keychain access group is shared with the widget extension.
+        credentials = AppGroup.credentials()
         service = ForecastService(api: APIClient(identity: identity, credentials: credentials))
         settings = AppSettings()
         stations = StationStore()
@@ -32,6 +31,7 @@ final class AppEnvironment {
     func updateSecret(_ value: String?, for key: CredentialKey) async throws {
         try credentials.setSecret(value?.trimmingCharacters(in: .whitespacesAndNewlines), for: key)
         await service.api.clearCache()
+        WidgetBridge.settingsChanged()
         if key == .ukAdmiraltySubscriptionKey {
             await stations.load(service: service, force: true)
         }

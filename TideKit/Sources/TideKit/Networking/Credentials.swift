@@ -139,11 +139,21 @@ public struct BundleCredentialStore: CredentialStore {
 
 #if canImport(Security)
 /// Stores secrets in the iOS Keychain (this device only, after first unlock,
-/// so background refresh can read them; never synced to iCloud).
+/// so background refresh and widgets can read them; never synced to iCloud).
+///
+/// With an `accessGroup` the items are shared with other targets of the
+/// same team that list the group in their `keychain-access-groups`
+/// entitlement (the widget extension). If the group isn't entitled (e.g. an
+/// unsigned simulator build), it falls back to the app's own keychain.
 public struct KeychainCredentialStore: CredentialStore {
     public let service: String
+    public let accessGroup: String?
 
-    public init(service: String = "app.tide.credentials") { self.service = service }
+    public init(service: String = "app.tide.credentials", accessGroup: String? = nil) {
+        self.service = service
+        let g = accessGroup?.trimmingCharacters(in: .whitespaces)
+        self.accessGroup = (g?.isEmpty ?? true) || g!.contains("$(") ? nil : g
+    }
 
     public enum KeychainError: Error, LocalizedError {
         case status(OSStatus)
@@ -153,32 +163,42 @@ public struct KeychainCredentialStore: CredentialStore {
         }
     }
 
-    private func query(_ key: CredentialKey) -> [String: Any] {
-        [
+    private func query(_ key: CredentialKey, group: String?) -> [String: Any] {
+        var q: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key.rawValue,
         ]
+        if let group { q[kSecAttrAccessGroup as String] = group }
+        return q
     }
 
     public func secret(for key: CredentialKey) -> String? {
-        var q = query(key)
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-        var out: AnyObject?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
-              let data = out as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        for group in [accessGroup, nil] {
+            var q = query(key, group: group)
+            q[kSecReturnData as String] = true
+            q[kSecMatchLimit as String] = kSecMatchLimitOne
+            var out: AnyObject?
+            if SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let data = out as? Data {
+                return String(data: data, encoding: .utf8)
+            }
+            if accessGroup == nil { break }
+        }
+        return nil
     }
 
     public func setSecret(_ value: String?, for key: CredentialKey) throws {
-        let base = query(key)
-        SecItemDelete(base as CFDictionary)
+        SecItemDelete(query(key, group: nil) as CFDictionary)
+        if accessGroup != nil { SecItemDelete(query(key, group: accessGroup) as CFDictionary) }
         guard let value, !value.isEmpty else { return }
-        var add = base
-        add[kSecValueData as String] = Data(value.utf8)
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(add as CFDictionary, nil)
+        func add(_ group: String?) -> OSStatus {
+            var add = query(key, group: group)
+            add[kSecValueData as String] = Data(value.utf8)
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            return SecItemAdd(add as CFDictionary, nil)
+        }
+        var status = add(accessGroup)
+        if status == errSecMissingEntitlement, accessGroup != nil { status = add(nil) }
         guard status == errSecSuccess else { throw KeychainError.status(status) }
     }
 }

@@ -2,7 +2,8 @@ import Foundation
 import Observation
 import TideKit
 
-/// Station catalogue with an on-disk cache so launch is instant offline.
+/// Station catalogue with an on-disk cache (in the App Group, so the widget
+/// station picker can list stations) so launch is instant offline.
 @MainActor
 @Observable
 final class StationStore {
@@ -13,20 +14,12 @@ final class StationStore {
 
     private static let maxAge: TimeInterval = 7 * 86_400
 
-    private var cacheURL: URL? {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent("stations-v1.json")
-    }
-
-    private struct CacheFile: Codable {
-        var saved: Date
-        var stations: [Station]
-    }
+    private let cache = AppGroup.stationCatalog
 
     init() {
-        if let url = cacheURL, let data = try? Data(contentsOf: url),
-           let cache = try? JSONDecoder().decode(CacheFile.self, from: data) {
-            stations = cache.stations
-            lastRefresh = cache.saved
+        if let cached = cache.load() {
+            stations = cached.stations
+            lastRefresh = cached.saved
         }
     }
 
@@ -39,9 +32,7 @@ final class StationStore {
         guard !fresh.isEmpty else { return }
         stations = fresh.sorted { ($0.region ?? "", $0.name) < ($1.region ?? "", $1.name) }
         lastRefresh = Date()
-        if let url = cacheURL, let data = try? JSONEncoder().encode(CacheFile(saved: Date(), stations: stations)) {
-            try? data.write(to: url, options: .atomic)
-        }
+        try? cache.save(stations)
     }
 
     func station(id: String) -> Station? { stations.first { $0.id == id } }

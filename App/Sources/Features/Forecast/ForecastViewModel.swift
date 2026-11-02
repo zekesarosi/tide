@@ -35,6 +35,7 @@ final class ForecastViewModel {
         do {
             let r = try await service.forecast(for: station, options: options)
             result = r
+            WidgetBridge.publish(r.forecast)
             lastOptions = options
             phase = .loaded
         } catch is CancellationError {

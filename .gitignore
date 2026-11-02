@@ -14,3 +14,6 @@ Config/Secrets.xcconfig
 .DS_Store
 App/Info.plist
 *.xcodeproj/
+Widgets/Info.plist
+App/TideForecast.entitlements
+Widgets/TideWidgets.entitlements

@@ -25,9 +25,16 @@ targets:
     sources:
       - path: App/Sources
       - path: App/Resources
+      - path: Shared
     dependencies:
       - package: TideKit
         product: TideKit
+      - target: TideWidgets
+    entitlements:
+      path: App/TideForecast.entitlements
+      properties:
+        com.apple.security.application-groups: [group.$(TIDE_BUNDLE_ID)]
+        keychain-access-groups: [$(AppIdentifierPrefix)$(TIDE_BUNDLE_ID).shared]
     info:
       path: App/Info.plist
       properties:
@@ -37,12 +44,18 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSLocationWhenInUseUsageDescription: Your location is used only on this device to list the nearest tide stations.
+        # Widgets open stations with tideforecast://station/<id>.
+        CFBundleURLTypes:
+          - CFBundleURLName: $(TIDE_BUNDLE_ID)
+            CFBundleURLSchemes: [tideforecast]
         ITSAppUsesNonExemptEncryption: false
         # Injected from Config/App.xcconfig (+ optional Config/Secrets.xcconfig).
         TideAppName: $(TIDE_APP_NAME)
         TideContact: $(TIDE_CONTACT)
         TideOpenMeteoAPIKey: $(OPEN_METEO_API_KEY)
         TideAdmiraltyKey: $(UK_ADMIRALTY_KEY)
+        TideAppGroup: group.$(TIDE_BUNDLE_ID)
+        TideKeychainGroup: $(AppIdentifierPrefix)$(TIDE_BUNDLE_ID).shared
     settings:
       base:
         PRODUCT_NAME: TideForecast
@@ -53,6 +66,48 @@ targets:
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Automatic
+  TideWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Widgets/Sources
+      - path: Shared
+      - path: App/Sources/Shared/Formatting.swift
+    dependencies:
+      - package: TideKit
+        product: TideKit
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    entitlements:
+      path: Widgets/TideWidgets.entitlements
+      properties:
+        com.apple.security.application-groups: [group.$(TIDE_BUNDLE_ID)]
+        keychain-access-groups: [$(AppIdentifierPrefix)$(TIDE_BUNDLE_ID).shared]
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: Tide & Surge
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        TideAppName: $(TIDE_APP_NAME)
+        TideContact: $(TIDE_CONTACT)
+        TideOpenMeteoAPIKey: $(OPEN_METEO_API_KEY)
+        TideAdmiraltyKey: $(UK_ADMIRALTY_KEY)
+        TideAppGroup: group.$(TIDE_BUNDLE_ID)
+        TideKeychainGroup: $(AppIdentifierPrefix)$(TIDE_BUNDLE_ID).shared
+    settings:
+      base:
+        PRODUCT_NAME: TideWidgets
+        PRODUCT_BUNDLE_IDENTIFIER: $(TIDE_BUNDLE_ID).widgets
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTED_PLATFORMS: iphoneos iphonesimulator
+        SKIP_INSTALL: YES
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         CODE_SIGN_STYLE: Automatic

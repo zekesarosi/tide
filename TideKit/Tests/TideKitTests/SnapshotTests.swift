@@ -1,0 +1,66 @@
+import XCTest
+@testable import TideKit
+
+final class SnapshotTests: XCTestCase {
+    let now = Date(timeIntervalSince1970: 1_793_570_400)
+
+    func testSampleSnapshotIsUsable() throws {
+        let s = ForecastSnapshot.sample(now: now)
+        XCTAssertEqual(s.version, ForecastSnapshot.currentVersion)
+        XCTAssertGreaterThan(s.total.count, 100)
+        XCTAssertEqual(s.total.count, s.sigma.count)
+        XCTAssertEqual(s.total.count, s.predicted.count)
+        XCTAssertNotNil(s.level(at: now + 3_600))
+        XCTAssertNotNil(s.isRising(at: now + 3_600))
+        XCTAssertEqual(s.nextEvents(after: now).count, 2)
+        XCTAssertGreaterThan(try XCTUnwrap(s.uncertainty(at: now + 6 * 3_600)), 0)
+        XCTAssertNotNil(s.minorFlood)
+        XCTAssertFalse(s.isStale(at: now + 3_600))
+        XCTAssertTrue(s.isStale(at: now + 4 * 3_600))
+    }
+
+    func testLevelTracksForecastTotalAndPredictedTide() throws {
+        let s = ForecastSnapshot.sample(now: now)
+        // Sample surge is +0.15 m, so the forecast sits above the tide.
+        let t = now + 5 * 3_600
+        let diff = try XCTUnwrap(s.level(at: t)) - XCTUnwrap(s.predictedLevel(at: t))
+        XCTAssertEqual(diff, 0.15, accuracy: 0.08)
+        // Next events alternate and are in the future.
+        let ev = s.nextEvents(after: now, limit: 4)
+        XCTAssertTrue(ev.allSatisfy { $0.date > now })
+        XCTAssertNotEqual(ev[0].kind, ev[1].kind)
+        // Chart window covers the request.
+        let pts = s.chartPoints(from: now - 3 * 3_600, to: now + 21 * 3_600)
+        XCTAssertGreaterThanOrEqual(pts.count, 48)
+        XCTAssertTrue(pts.contains { $0.total != nil && $0.lower != nil && $0.upper != nil })
+    }
+
+    func testStoreRoundTripsIncludingNaNGaps() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ForecastSnapshotStore(directory: dir)
+        var s = ForecastSnapshot.sample(now: now)
+        s.total[0] = .nan
+        try store.save(s)
+        let back = try XCTUnwrap(store.load(stationID: s.stationID))
+        XCTAssertTrue(back.total[0].isNaN)
+        let i = try XCTUnwrap(s.total.lastIndex { !$0.isNaN })
+        XCTAssertEqual(back.total[i], s.total[i])
+        XCTAssertEqual(back.events, s.events)
+        XCTAssertEqual(back.issued, s.issued)
+        store.remove(stationID: s.stationID)
+        XCTAssertNil(store.load(stationID: s.stationID))
+    }
+
+    func testStationCatalogCache() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("stations.json")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let cache = StationCatalogCache(url: url)
+        XCTAssertNil(cache.load())
+        let st = [Station(source: .noaaCoops, code: "9414290", name: "San Francisco", latitude: 37.8, longitude: -122.47)]
+        try cache.save(st, at: now)
+        let loaded = try XCTUnwrap(cache.load())
+        XCTAssertEqual(loaded.stations, st)
+        XCTAssertEqual(loaded.saved, now)
+    }
+}

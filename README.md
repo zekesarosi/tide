@@ -30,6 +30,12 @@ Highlights:
 * **Probabilistic output.** You get an 80 % band on the water level curve, and
   each high tide gets a probability of reaching the NWS minor, moderate and major
   flood thresholds.
+* **Widgets.** Home-screen widgets in small, medium and large, and lock-screen
+  widgets in rectangular, circular and inline styles. They show the water level
+  now and its trend, the anomaly vs. the tide table, the next tides, flood risk,
+  and a mini forecast chart with its uncertainty band. Pick the station with
+  Edit Widget; your first favorite is the default. Tapping a widget opens that
+  station.
 * **Context.** NWS coastal flood and storm surge alerts are shown. When a tropical
   cyclone is within 1,000 km, uncertainty is inflated and a warning appears.
   Statistical surge models are unreliable in hurricanes, so the app defers to NHC.
@@ -60,8 +66,10 @@ TideKit/                 Swift package: all forecasting logic (no UI), runs on i
     Services/            ForecastService: parallel fetch + graceful degradation
   Sources/tide-cli/      Command-line harness that runs the live pipeline
   Sources/tide-analyze/  Retrospective analysis of a past week (hindcasts, attribution)
-  Tests/TideKitTests/    34 tests incl. validation against NOAA fixtures
+  Tests/TideKitTests/    38 tests incl. validation against NOAA fixtures
 App/                     SwiftUI iPhone app
+Widgets/                 WidgetKit extension (home + lock screen), App Intents station picker
+Shared/                  App Group helpers compiled into both the app and the widget
 Config/                  xcconfig (identity, keys) — Secrets.xcconfig is git-ignored
 project.yml              XcodeGen spec (generates TideForecast.xcodeproj)
 docs/ARCHITECTURE.md     Data sources, auth, and the forecasting method in detail
