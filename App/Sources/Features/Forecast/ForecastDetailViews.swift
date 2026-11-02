@@ -187,7 +187,7 @@ private struct DivergingBar: View {
                 Rectangle().fill(Theme.hairline).frame(width: 1, height: geo.size.height).offset(x: half)
                 Capsule().fill(color)
                     .frame(width: max(len, 2), height: 6)
-                    .offset(x: fraction >= 0 ? half : half - len, y: (geo.size.height - 6) / 2)
+                    .offset(x: fraction >= 0 ? half : half - len)
             }
         }
         .accessibilityHidden(true)
