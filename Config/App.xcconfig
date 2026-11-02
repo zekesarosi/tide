@@ -1,0 +1,24 @@
+// Build configuration for the TideForecast app.
+//
+// NOTE: in .xcconfig files "//" starts a comment, so don't put URLs here
+// (use an e-mail address for TIDE_CONTACT).
+
+TIDE_APP_NAME = TideForecast
+TIDE_BUNDLE_ID = com.example.tideforecast
+
+// Contact for the app's operator. api.weather.gov requires every request to
+// carry a User-Agent identifying the application and a contact; NWS may block
+// requests without one. Override in Config/Secrets.xcconfig.
+TIDE_CONTACT = contact-not-configured
+
+// Optional API keys (leave empty). Prefer entering keys in the app's
+// Settings › API keys, which stores them in the Keychain. Anything set here
+// is embedded in the app binary and can be extracted, so only use it for
+// development builds.
+OPEN_METEO_API_KEY =
+UK_ADMIRALTY_KEY =
+
+DEVELOPMENT_TEAM =
+
+// Local, untracked overrides (see Secrets.example.xcconfig).
+#include? "Secrets.xcconfig"

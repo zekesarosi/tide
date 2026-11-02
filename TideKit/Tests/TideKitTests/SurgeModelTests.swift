@@ -229,4 +229,26 @@ final class ForecasterTests: XCTestCase {
         XCTAssertGreaterThan(b.surge[0].sigma, a.surge[0].sigma * 1.5)
         XCTAssertTrue(b.notes.contains { $0.contains("NHC") })
     }
+
+    func testNonTidalUsesMeanLevelBaseline() {
+        // Great Lakes style: level ~174 m with a wind-driven seiche, no tide.
+        let start = now - 32 * 86_400
+        let met = forcing(from: start, hours: 32 * 24 + 50)
+        var obs: [TimeSeriesPoint] = []
+        var t = start
+        while t <= now {
+            let h = t.timeIntervalSince(start) / 3_600
+            obs.append(.init(date: t, value: 174.2 + 0.1 * sin(h / 30)))
+            t += 360
+        }
+        let station = Station(source: .noaaCoops, code: "9063020", name: "Buffalo", latitude: 42.9, longitude: -78.9, isTidal: false)
+        let f = TotalWaterLevelForecaster.forecast(ForecastInputs(
+            station: station, datum: .igld, issueTime: now, horizonHours: 48, astronomical: .none,
+            observations: TimeSeries(points: obs), forcing: met))
+        XCTAssertTrue(f.notes.contains { $0.contains("Non-tidal") })
+        XCTAssertTrue(f.events.isEmpty)
+        XCTAssertLessThan(abs(f.surge.first?.surge ?? 99), 0.3)       // anomaly, not 174 m
+        XCTAssertEqual(f.total.first?.value ?? 0, 174.2, accuracy: 0.3) // total is still absolute level
+        XCTAssertFalse(f.model.usesTideInteraction)
+    }
 }

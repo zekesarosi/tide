@@ -69,8 +69,29 @@ public enum DFODecoding {
             if codes.contains("wlp") { caps.insert(.predictions) }
             if codes.contains("wlf") || codes.contains("wlf-spine") { caps.insert(.officialForecast) }
             return Station(source: .dfoIWLS, code: s.id, name: s.officialName, region: s.provinceCode,
-                           latitude: s.latitude, longitude: s.longitude, timeZoneIdentifier: nil,
+                           latitude: s.latitude, longitude: s.longitude,
+                           timeZoneIdentifier: timeZone(province: s.provinceCode, longitude: s.longitude),
                            isTidal: true, capabilities: caps)
+        }
+    }
+
+    /// Province → IANA zone (IWLS doesn't publish one). Nunavut and Quebec
+    /// span zones, so longitude refines them.
+    static func timeZone(province: String?, longitude: Double) -> String? {
+        switch province?.uppercased() {
+        case "BC": return "America/Vancouver"
+        case "AB": return "America/Edmonton"
+        case "SK": return "America/Regina"
+        case "MB": return "America/Winnipeg"
+        case "ON": return longitude < -90 ? "America/Winnipeg" : "America/Toronto"
+        case "QC": return longitude > -63 ? "America/Halifax" : "America/Toronto"
+        case "NB": return "America/Moncton"
+        case "NS", "PE": return "America/Halifax"
+        case "NL": return longitude < -59.5 ? "America/Goose_Bay" : "America/St_Johns"
+        case "YT": return "America/Whitehorse"
+        case "NT": return "America/Yellowknife"
+        case "NU": return longitude < -102 ? "America/Cambridge_Bay" : (longitude < -85 ? "America/Rankin_Inlet" : "America/Iqaluit")
+        default: return nil
         }
     }
 
