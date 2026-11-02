@@ -90,6 +90,7 @@ final class ProviderDecodingTests: XCTestCase {
     func testDFO() throws {
         let stations = try DFODecoding.stations(from: Fixtures.data("dfo_stations"))
         XCTAssertEqual(stations.first?.name, "Point Atkinson")
+        XCTAssertEqual(stations.first?.timeZoneIdentifier, "America/Vancouver")
         XCTAssertTrue(stations.first?.capabilities.contains(.predictions) == true)
         let wlp = try DFODecoding.series(from: Fixtures.data("dfo_wlp"))
         XCTAssertGreaterThan(wlp.count, 100)

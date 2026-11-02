@@ -96,8 +96,8 @@ public struct Endpoint: Sendable {
 /// Shared HTTP client: identification headers, credentials, retries with
 /// exponential backoff, per-host pacing, and a small TTL cache.
 public actor APIClient {
-    public let identity: AppIdentity
-    public let credentials: CredentialStore
+    public nonisolated let identity: AppIdentity
+    public nonisolated let credentials: CredentialStore
     let transport: HTTPTransport
     let maxAttempts: Int
     let baseBackoff: TimeInterval
@@ -139,7 +139,13 @@ public actor APIClient {
         inFlight[key] = task
         defer { inFlight[key] = nil }
         let data = try await task.value
-        if endpoint.cacheTTL > 0 { cache[key] = (Date().addingTimeInterval(endpoint.cacheTTL), data) }
+        if endpoint.cacheTTL > 0 {
+            if cache.count > 200 {
+                let now = Date()
+                cache = cache.filter { $0.value.expires > now }
+            }
+            cache[key] = (Date().addingTimeInterval(endpoint.cacheTTL), data)
+        }
         return data
     }
 

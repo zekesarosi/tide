@@ -12,3 +12,5 @@ Package.resolved
 Config/Secrets.xcconfig
 
 .DS_Store
+App/Info.plist
+*.xcodeproj/
