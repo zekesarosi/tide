@@ -36,6 +36,9 @@ struct StationListView: View {
         .background(Theme.mist)
         .navigationTitle("Tides")
         .navigationDestination(for: Station.self) { StationDetailView(station: $0).id($0.id) }
+        .navigationDestination(for: RegionRoute.self) { r in
+            RegionStationsView(region: r.region, stations: store.grouped.first { $0.region == r.region }?.stations ?? [])
+        }
         .searchable(text: $query, prompt: "Search stations")
         .refreshable {
             await store.load(service: env.service, force: true)
@@ -125,9 +128,7 @@ struct StationListView: View {
         GroupCard {
             ForEach(Array(store.grouped.enumerated()), id: \.element.region) { i, group in
                 if i > 0 { Divider().overlay(Theme.hairline).padding(.leading, 16) }
-                NavigationLink {
-                    RegionStationsView(region: group.region, stations: group.stations)
-                } label: {
+                NavigationLink(value: RegionRoute(region: group.region)) {
                     HStack {
                         Text(group.region).foregroundStyle(Theme.ink)
                         Spacer()
@@ -348,6 +349,12 @@ struct StationRow: View {
         }
         .buttonStyle(.plain)
     }
+}
+
+/// A state/province in the Browse list, pushed by value so it lives in the
+/// Tides tab's navigation path alongside the stations it leads to.
+struct RegionRoute: Hashable {
+    let region: String
 }
 
 struct RegionStationsView: View {

@@ -22,7 +22,9 @@ struct RootView: View {
 
     @Environment(AppEnvironment.self) private var env
     @Environment(StationStore.self) private var store
-    @State private var stationPath: [Station] = []
+    /// Holds `Station`s and `RegionRoute`s: every push in the Tides tab goes
+    /// through the path, so pushing a station never drops the screens below.
+    @State private var stationPath = NavigationPath()
     @State private var pendingStationID: String?
 
     var body: some View {
@@ -56,6 +58,8 @@ struct RootView: View {
         guard let id = pendingStationID, let station = store.station(id: id) else { return }
         pendingStationID = nil
         env.router.tab = .stations
-        stationPath = [station]
+        var path = NavigationPath()
+        path.append(station)
+        stationPath = path
     }
 }
