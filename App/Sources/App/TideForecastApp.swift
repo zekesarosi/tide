@@ -28,7 +28,7 @@ struct RootView: View {
     var body: some View {
         TabView(selection: $tab) {
             NavigationStack(path: $stationPath) { StationListView() }
-                .tabItem { Label("Stations", systemImage: "list.bullet") }
+                .tabItem { Label("Tides", systemImage: "water.waves") }
                 .tag(Tab.stations)
             NavigationStack { StationMapView() }
                 .tabItem { Label("Map", systemImage: "map") }
@@ -37,6 +37,7 @@ struct RootView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(Tab.settings)
         }
+        .tint(Theme.harbor)
         // Widgets open `tideforecast://station/<id>`.
         .onOpenURL { url in
             guard let id = AppGroup.stationID(from: url) else { return }

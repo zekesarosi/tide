@@ -14,6 +14,22 @@ enum Fmt {
         date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, timeZone: tz))
     }
 
+    /// "11:51 AM", or "Tue 12:06 AM" when the date isn't today at the station.
+    static func smartTime(_ date: Date, in tz: TimeZone, relativeTo now: Date = Date()) -> String {
+        var cal = Calendar.current
+        cal.timeZone = tz
+        return cal.isDate(date, inSameDayAs: now) ? time(date, in: tz) : dayTime(date, in: tz)
+    }
+
+    /// "Tue", or "Today" / "Tomorrow" at the station.
+    static func dayName(_ date: Date, in tz: TimeZone, relativeTo now: Date = Date()) -> String {
+        var cal = Calendar.current
+        cal.timeZone = tz
+        if cal.isDate(date, inSameDayAs: now) { return "Today" }
+        if let t = cal.date(byAdding: .day, value: 1, to: now), cal.isDate(date, inSameDayAs: t) { return "Tomorrow" }
+        return date.formatted(Date.FormatStyle(timeZone: tz).weekday(.wide))
+    }
+
     static func dayTime(_ date: Date, in tz: TimeZone) -> String {
         var style = Date.FormatStyle(date: .omitted, time: .shortened, timeZone: tz)
         style = style.weekday(.abbreviated)
@@ -37,15 +53,8 @@ enum Fmt {
 }
 
 extension FloodCategory {
-    var color: Color {
-        switch self {
-        case .none: return .green
-        case .action: return .yellow
-        case .minor: return .orange
-        case .moderate: return .red
-        case .major: return .purple
-        }
-    }
+    /// Category color from the Slack Water palette (see Theme).
+    var color: Color { tint }
 
     var shortLabel: String {
         switch self {
