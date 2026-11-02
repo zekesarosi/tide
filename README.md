@@ -36,13 +36,14 @@ Highlights:
   and a mini forecast chart with its uncertainty band. Pick the station with
   Edit Widget; your first favorite is the default. Tapping a widget opens that
   station.
-* **San Francisco Bay.** A live map and propagation strip show high water
-  travelling from the Golden Gate into the South Bay and up through Carquinez
-  Strait over a tidal day (play/scrub). Each of 17 NOAA stations gets its
+* **San Francisco Bay.** Zoom the Map tab in on the bay and its stations
+  become live tide markers: play or scrub a tidal day to watch high water
+  travel from the Golden Gate into the South Bay and up through Carquinez
+  Strait, with a propagation strip in the Timing sheet. Each of 17 NOAA stations gets its
   high- and low-water lag and range ratio against the San Francisco radar gauge
   (9414290), averaged over 59 days of on-device predictions with the spread,
-  plus the observed lag from two weeks of gauge data. Open it from any bay
-  station or the Map tab.
+  plus the observed lag from two weeks of gauge data. Bay station screens
+  and `tideforecast://bay` fly the map there.
 * **Context.** NWS coastal flood and storm surge alerts are shown. When a tropical
   cyclone is within 1,000 km, uncertainty is inflated and a warning appears.
   Statistical surge models are unreliable in hurricanes, so the app defers to NHC.
