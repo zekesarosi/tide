@@ -23,7 +23,11 @@ struct TideProvider: AppIntentTimelineProvider {
     static let maxAge: TimeInterval = 45 * 60
     /// Entries step the "now" marker forward between refreshes.
     static let entrySpacing: TimeInterval = 15 * 60
-    static let entryCount = 16
+    /// Cover up to 12 h so the widget keeps moving if reloads are throttled.
+    static let entryHorizon: TimeInterval = 12 * 3_600
+    /// After a failed fetch, don't try again (unless forced) for this long.
+    static let failureBackoff: TimeInterval = 45 * 60
+    static let lastFailureKey = "widget.lastFailure"
 
     func placeholder(in context: Context) -> TideEntry {
         TideEntry(date: Date(), state: .ready(.sample()), unit: SharedSettings.load().unit)
@@ -44,7 +48,7 @@ struct TideProvider: AppIntentTimelineProvider {
     func timeline(for configuration: SelectStationIntent, in context: Context) async -> Timeline<TideEntry> {
         let settings = SharedSettings.load()
         let (entries, fresh) = await currentEntries(configuration, settings: settings)
-        let next = Date().addingTimeInterval(fresh ? 30 * 60 : 15 * 60)
+        let next = Date().addingTimeInterval(fresh ? 30 * 60 : 60 * 60)
         return Timeline(entries: entries, policy: .after(next))
     }
 
@@ -64,9 +68,14 @@ struct TideProvider: AppIntentTimelineProvider {
         var snap = AppGroup.snapshots.load(stationID: station.id)
         let forced = AppGroup.defaults.string(forKey: RefreshTideIntent.forceKey) == station.id
         let wantDatum = settings.datum(for: station)
-        let needsFetch = forced || snap == nil || snap!.datum != wantDatum || now.timeIntervalSince(snap!.issued) > Self.maxAge
-        var fresh = !needsFetch
-        var failure: String?
+        let wantsFetch = forced || snap == nil || snap!.datum != wantDatum || now.timeIntervalSince(snap!.issued) > Self.maxAge
+        // Back off after a failure so a persistent error doesn't spend the
+        // widget's refresh budget on a full forecast every reload.
+        let lastFailure = AppGroup.defaults.object(forKey: Self.lastFailureKey) as? Date
+        let backingOff = !forced && lastFailure.map { now.timeIntervalSince($0) < Self.failureBackoff } == true
+        let needsFetch = wantsFetch && !backingOff
+        var fresh = !wantsFetch
+        var failure: String? = backingOff ? "Couldn't update the forecast recently; will retry soon." : nil
         if needsFetch {
             if forced { AppGroup.defaults.removeObject(forKey: RefreshTideIntent.forceKey) }
             do {
@@ -74,14 +83,18 @@ struct TideProvider: AppIntentTimelineProvider {
                 try? AppGroup.snapshots.save(s)
                 snap = s
                 fresh = true
+                AppGroup.defaults.removeObject(forKey: Self.lastFailureKey)
             } catch {
                 failure = (error as? LocalizedError)?.errorDescription ?? "Couldn't update the forecast."
+                AppGroup.defaults.set(now, forKey: Self.lastFailureKey)
             }
         }
         guard let ready = snap, ready.datum == wantDatum else {
             return ([TideEntry(date: now, state: .unavailable(stationName: station.name, message: failure ?? "No forecast yet."), unit: settings.unit)], false)
         }
-        let entries = (0..<Self.entryCount).map { i in
+        let last = min(now + Self.entryHorizon, max(ready.end, now))
+        let count = max(1, Int(last.timeIntervalSince(now) / Self.entrySpacing) + 1)
+        let entries = (0..<count).map { i in
             TideEntry(date: now + Double(i) * Self.entrySpacing, state: .ready(ready), unit: settings.unit)
         }
         return (entries, fresh)

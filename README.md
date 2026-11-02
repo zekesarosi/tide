@@ -66,7 +66,7 @@ TideKit/                 Swift package: all forecasting logic (no UI), runs on i
     Services/            ForecastService: parallel fetch + graceful degradation
   Sources/tide-cli/      Command-line harness that runs the live pipeline
   Sources/tide-analyze/  Retrospective analysis of a past week (hindcasts, attribution)
-  Tests/TideKitTests/    38 tests incl. validation against NOAA fixtures
+  Tests/TideKitTests/    39 tests incl. validation against NOAA fixtures
 App/                     SwiftUI iPhone app
 Widgets/                 WidgetKit extension (home + lock screen), App Intents station picker
 Shared/                  App Group helpers compiled into both the app and the widget

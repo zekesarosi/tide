@@ -42,9 +42,23 @@ struct TideWidgetView: View {
             ready(snap)
                 .widgetURL(AppGroup.deepLink(stationID: snap.stationID))
         case .needsStation:
-            MessageView(title: "Tide & Surge", message: "Touch and hold, then Edit Widget to choose a station. Favorites are used by default.")
-        case .unavailable(let name, let message):
-            MessageView(title: name, message: message)
+            message(title: "Tide & Surge", text: "Touch and hold, then Edit Widget to choose a station. Favorites are used by default.", short: "Choose station")
+        case .unavailable(let name, let text):
+            message(title: name, text: text, short: "No forecast")
+        }
+    }
+
+    /// Lock-screen families get a glyph or a few words instead of a paragraph.
+    @ViewBuilder private func message(title: String, text: String, short: String) -> some View {
+        switch family {
+        case .accessoryCircular: Image(systemName: "water.waves").font(.title3)
+        case .accessoryInline: Label(short, systemImage: "water.waves")
+        case .accessoryRectangular:
+            VStack(alignment: .leading) {
+                Text(title).font(.headline).lineLimit(1)
+                Text(short).font(.caption)
+            }
+        default: MessageView(title: title, message: text)
         }
     }
 
@@ -138,7 +152,7 @@ struct EventRow: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: e.kind == .high ? "arrow.up.to.line" : "arrow.down.to.line")
-                .font(.caption2).foregroundStyle(e.kind == .high ? .blue : .teal)
+                .font(.caption2).foregroundStyle(e.kind == .high ? Color.blue : Color.teal)
             Text("\(m.eventTitle(e)) \(Fmt.time(e.date, in: m.tz))").font(.caption).lineLimit(1)
             Spacer(minLength: 4)
             Text(m.len(e.total)).font(.caption.weight(.semibold)).monospacedDigit()
@@ -188,17 +202,26 @@ struct TideMiniChart: View {
     let hoursBack: Double
     let hoursAhead: Double
 
+    /// Hour ticks on the station's clock, matching the labels.
+    private var stationCalendar: Calendar {
+        var c = Calendar.current
+        c.timeZone = m.tz
+        return c
+    }
+
     var body: some View {
-        let from = m.date - hoursBack * 3_600, to = m.date + hoursAhead * 3_600
-        let pts = m.snap.chartPoints(from: from, to: to)
-        let u = m.unit
-        let minor = m.snap.minorFlood.map(u.fromMeters)
-        let values = pts.flatMap { [$0.lower, $0.upper, $0.predicted, $0.total].compactMap { $0 } }.map(u.fromMeters)
-        let lo = values.min() ?? 0, hi = values.max() ?? 1
-        // Show the flood line only when it is near the data.
-        let showMinor = minor.map { $0 - hi < (hi - lo) * 0.5 } ?? false
-        let top = showMinor ? max(hi, minor ?? hi) : hi
-        let pad = max((top - lo) * 0.08, 0.05)
+        let from: Date = m.date - hoursBack * 3_600
+        let to: Date = m.date + hoursAhead * 3_600
+        let pts: [ForecastSnapshot.ChartPoint] = m.snap.chartPoints(from: from, to: to)
+        let u: LengthUnit = m.unit
+        let minor: Double? = m.snap.minorFlood.map(u.fromMeters)
+        let values: [Double] = pts.flatMap { [$0.lower, $0.upper, $0.predicted, $0.total].compactMap { $0 } }.map(u.fromMeters)
+        let lo: Double = values.min() ?? 0
+        let hi: Double = values.max() ?? 1
+        // Show the flood line only when it is near (and not below) the data.
+        let showMinor: Bool = minor.map { $0 >= lo && $0 - hi < (hi - lo) * 0.5 } ?? false
+        let top: Double = showMinor ? max(hi, minor ?? hi) : hi
+        let pad: Double = max((top - lo) * 0.08, 0.05)
 
         Chart {
             ForEach(pts) { p in
@@ -233,8 +256,9 @@ struct TideMiniChart: View {
         .chartXScale(domain: from...to)
         .chartYScale(domain: (lo - pad)...(top + pad))
         .chartYAxis(.hidden)
+        .chartPlotStyle { $0.clipped() }
         .chartXAxis {
-            AxisMarks(values: .stride(by: .hour, count: hoursAhead > 30 ? 12 : 6)) { value in
+            AxisMarks(values: .stride(by: .hour, count: hoursAhead > 30 ? 12 : 6, calendar: stationCalendar)) { value in
                 AxisGridLine().foregroundStyle(Color.secondary.opacity(0.2))
                 AxisValueLabel {
                     if let d = value.as(Date.self) {
@@ -328,7 +352,7 @@ struct RectangularTideView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 4) {
-                Image(systemName: m.arrow)
+                if m.rising != nil { Image(systemName: m.arrow) }
                 Text(m.len(m.level)).font(.headline)
                 if let a = m.snap.currentAnomaly, abs(a) >= 0.15 {
                     Text(m.len(a, signed: true)).font(.caption2)
