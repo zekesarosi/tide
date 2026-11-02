@@ -2,31 +2,26 @@ import Foundation
 import Observation
 import TideKit
 
-/// User preferences persisted in UserDefaults.
+/// User preferences, persisted in the App Group's UserDefaults so the
+/// widget extension sees the same units, datum and favorites.
 @MainActor
 @Observable
 final class AppSettings {
     private let defaults: UserDefaults
 
-    var unit: LengthUnit { didSet { defaults.set(unit.rawValue, forKey: Keys.unit) } }
-    var datum: TidalDatum { didSet { defaults.set(datum.rawValue, forKey: Keys.datum) } }
+    var unit: LengthUnit { didSet { defaults.set(unit.rawValue, forKey: Keys.unit); WidgetBridge.settingsChanged() } }
+    var datum: TidalDatum { didSet { defaults.set(datum.rawValue, forKey: Keys.datum); WidgetBridge.settingsChanged() } }
     var horizonHours: Int { didSet { defaults.set(horizonHours, forKey: Keys.horizon) } }
     var blendOfficialGuidance: Bool { didSet { defaults.set(blendOfficialGuidance, forKey: Keys.blend) } }
-    var favoriteIDs: [String] { didSet { defaults.set(favoriteIDs, forKey: Keys.favorites) } }
+    var favoriteIDs: [String] { didSet { defaults.set(favoriteIDs, forKey: Keys.favorites); WidgetBridge.settingsChanged() } }
 
     /// Datums offered for NOAA stations.
     static let selectableDatums: [TidalDatum] = [.mllw, .mlw, .msl, .mhw, .mhhw, .navd88]
     static let horizons = [48, 72, 120, 168]
 
-    private enum Keys {
-        static let unit = "settings.unit"
-        static let datum = "settings.datum"
-        static let horizon = "settings.horizonHours"
-        static let blend = "settings.blendOfficial"
-        static let favorites = "settings.favorites"
-    }
+    private typealias Keys = SharedSettingsKeys
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = AppGroup.defaults) {
         self.defaults = defaults
         let defaultUnit: LengthUnit = Locale.current.measurementSystem == .us ? .feet : .meters
         unit = defaults.string(forKey: Keys.unit).flatMap(LengthUnit.init(rawValue:)) ?? defaultUnit

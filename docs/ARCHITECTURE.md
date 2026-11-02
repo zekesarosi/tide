@@ -130,6 +130,29 @@ high tide:
 P(reach category) = 1 − Φ((threshold − total) / σ)
 ```
 
+## Widgets
+
+The app and the widget extension share an App Group (`group.<bundle id>`) and
+a Keychain access group (`<team>.<bundle id>.shared`):
+
+* **App side.** After every forecast load, the app saves a `ForecastSnapshot` to
+  the group container and reloads widget timelines. The snapshot is a compact copy
+  of the forecast: 12 h back to 48 h ahead on a 30-minute grid, with σ, the
+  predicted tide, the latest observation, events with flood probabilities, the
+  thresholds and alert titles.
+* **Station list and settings.** The app also writes the station catalog and the
+  user's settings (units, datum, favorites) to the group, so the widget's station
+  picker (an App Intents `EntityStringQuery`) works offline.
+* **Widget timelines.** The `AppIntentTimelineProvider` makes 16 entries,
+  15 minutes apart, from one snapshot, so the "now" marker, level and trend move
+  without network access.
+* **When the widget fetches.** If the snapshot is older than 45 minutes, in a
+  different datum, or the user pressed the widget's refresh button (an interactive
+  App Intent), the widget runs TideKit's normal `ForecastService` pipeline itself,
+  with a 48 h horizon and a 25 s timeout. It falls back to the saved snapshot on
+  failure and asks for a new timeline after 30 minutes (15 after a failure).
+* **Deep links.** Tapping a widget opens `tideforecast://station/<id>`.
+
 ## Networking and auth (`APIClient`)
 
 * **Identity.** Every request carries `User-Agent: <App>/<version> (<contact>)`,
