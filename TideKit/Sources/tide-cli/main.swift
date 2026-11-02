@@ -2,6 +2,7 @@ import Foundation
 import TideKit
 
 // Usage: tide-cli <NOAA station id | search text> [datum] [hours]
+//        tide-cli bay      (San Francisco Bay offsets vs 9414290)
 // Env:   TIDE_CONTACT (required by api.weather.gov), OPEN_METEO_API_KEY, UK_ADMIRALTY_KEY
 
 let args = CommandLine.arguments.dropFirst()
@@ -15,6 +16,11 @@ var secrets: [CredentialKey: String] = [:]
 if let k = env["OPEN_METEO_API_KEY"] { secrets[.openMeteoAPIKey] = k }
 if let k = env["UK_ADMIRALTY_KEY"] { secrets[.ukAdmiraltySubscriptionKey] = k }
 let service = ForecastService(api: APIClient(identity: identity, credentials: InMemoryCredentialStore(secrets)))
+
+if query.lowercased() == "bay" {
+    await runBay(api: service.api)
+    exit(0)
+}
 
 func fmt(_ v: Double) -> String { String(format: "%6.2f", v) }
 

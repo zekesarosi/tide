@@ -27,6 +27,18 @@ struct StationMapView: View {
         }
         .navigationTitle("Map")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    BayView()
+                } label: {
+                    Label("SF Bay", systemImage: "water.waves")
+                        .labelStyle(.titleAndIcon)
+                        .font(.subheadline.weight(.semibold))
+                }
+                .accessibilityLabel("San Francisco Bay tides")
+            }
+        }
         .safeAreaInset(edge: .bottom) {
             if let id = selectedID, let s = store.station(id: id) {
                 NavigationLink(value: s) {

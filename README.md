@@ -36,6 +36,13 @@ Highlights:
   and a mini forecast chart with its uncertainty band. Pick the station with
   Edit Widget; your first favorite is the default. Tapping a widget opens that
   station.
+* **San Francisco Bay.** A live map and propagation strip show high water
+  travelling from the Golden Gate into the South Bay and up through Carquinez
+  Strait over a tidal day (play/scrub). Each of 17 NOAA stations gets its
+  high- and low-water lag and range ratio against the San Francisco radar gauge
+  (9414290), averaged over 59 days of on-device predictions with the spread,
+  plus the observed lag from two weeks of gauge data. Open it from any bay
+  station or the Map tab.
 * **Context.** NWS coastal flood and storm surge alerts are shown. When a tropical
   cyclone is within 1,000 km, uncertainty is inflated and a warning appears.
   Statistical surge models are unreliable in hurricanes, so the app defers to NHC.
@@ -66,7 +73,7 @@ TideKit/                 Swift package: all forecasting logic (no UI), runs on i
     Services/            ForecastService: parallel fetch + graceful degradation
   Sources/tide-cli/      Command-line harness that runs the live pipeline
   Sources/tide-analyze/  Retrospective analysis of a past week (hindcasts, attribution)
-  Tests/TideKitTests/    39 tests incl. validation against NOAA fixtures
+  Tests/TideKitTests/    50 tests incl. validation against NOAA fixtures
 App/                     SwiftUI iPhone app
 Widgets/                 WidgetKit extension (home + lock screen), App Intents station picker
 Shared/                  App Group helpers + Slack Water theme, compiled into both app and widget

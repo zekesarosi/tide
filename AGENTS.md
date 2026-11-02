@@ -7,7 +7,7 @@ Directions for coding agents working on this repo. See README.md for the project
 ## Build & test
 
 ```sh
-swift test --package-path TideKit          # 39 unit tests, ~5 s, no network
+swift test --package-path TideKit          # 50 unit tests, ~5 s, no network
 xcodegen generate                          # after adding/removing files or editing project.yml
 xcodebuildmcp simulator build-and-run \
   --project-path TideForecast.xcodeproj --scheme TideForecast \
@@ -37,6 +37,8 @@ xcodebuildmcp simulator build-and-run \
 
 - Bundle id (default config): `com.example.tideforecast`.
 - Deep link: `tideforecast://station/<source>:<code>`, e.g. `tideforecast://station/noaa-coops:8518750`.
+  San Francisco Bay screen: `tideforecast://bay` or `tideforecast://bay/<NOAA code>` (selects that station).
+  `swift run --package-path TideKit tide-cli bay` prints the bay offsets table against NOAA's own hi/lo tables.
   A bare code (`.../station/8518750`) is ignored. `simctl openurl` shows an "Open in Tide & Surge?" dialog.
 - Good smoke-test stations: The Battery NY (`noaa-coops:8518750`, tidal + NWS blend + flood levels),
   Buffalo NY (`noaa-coops:9063020`, Great Lakes, no flood levels), Point Atkinson (DFO Canada, search "Atkinson").

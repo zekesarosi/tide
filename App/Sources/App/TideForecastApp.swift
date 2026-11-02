@@ -24,10 +24,17 @@ struct RootView: View {
     @State private var tab: Tab = .stations
     @State private var stationPath: [Station] = []
     @State private var pendingStationID: String?
+    /// Set by `tideforecast://bay[/<code>]`.
+    @State private var bayLink: BayLink?
+
+    struct BayLink: Hashable { let code: String? }
 
     var body: some View {
         TabView(selection: $tab) {
-            NavigationStack(path: $stationPath) { StationListView() }
+            NavigationStack(path: $stationPath) {
+                StationListView()
+                    .navigationDestination(item: $bayLink) { BayView(initialCode: $0.code) }
+            }
                 .tabItem { Label("Tides", systemImage: "water.waves") }
                 .tag(Tab.stations)
             NavigationStack { StationMapView() }
@@ -40,6 +47,12 @@ struct RootView: View {
         .tint(Theme.harbor)
         // Widgets open `tideforecast://station/<id>`.
         .onOpenURL { url in
+            if let code = AppGroup.bayStationCode(from: url) {
+                tab = .stations
+                stationPath = []
+                bayLink = BayLink(code: code.isEmpty ? nil : code)
+                return
+            }
             guard let id = AppGroup.stationID(from: url) else { return }
             pendingStationID = id
             openPendingStation()

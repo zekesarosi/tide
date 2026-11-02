@@ -12,6 +12,8 @@ final class AppEnvironment {
     let settings: AppSettings
     let stations: StationStore
     let location: LocationProvider
+    /// San Francisco Bay analysis, loaded when the Bay screen first opens.
+    let bay = BayModel()
 
     init() {
         identity = AppIdentity.fromBundle()

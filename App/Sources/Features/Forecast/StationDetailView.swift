@@ -127,6 +127,12 @@ struct StationDetailView: View {
         .padding(.horizontal, Theme.margin)
         .padding(.top, Theme.sectionGap)
 
+        if SFBay.contains(station) {
+            BayEntryCard(station: station, highLag: env.bay.highLag(code: station.code))
+                .padding(.horizontal, Theme.margin)
+                .padding(.top, Theme.sectionGap)
+        }
+
         VStack(alignment: .leading, spacing: 12) {
             SectionLabel("Tide calendar")
             TideCalendarView(forecast: f, unit: unit, tz: tz)
@@ -279,5 +285,50 @@ private struct LoadingHero: View {
         .padding(.top, 24)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Loading forecast")
+    }
+}
+
+/// The way into the San Francisco Bay screen from a bay station.
+private struct BayEntryCard: View {
+    let station: Station
+    let highLag: TimeInterval?
+
+    private var detail: String {
+        if station.code == SFBay.referenceCode {
+            return "Watch high water travel from the Golden Gate into the South Bay and up to Carquinez Strait."
+        }
+        if let lag = highLag {
+            return "High water here comes \(Fmt.lagSpoken(lag)) than at San Francisco. See how the tide moves through the bay."
+        }
+        return "See how the tide moves through the bay, and this station's timing against San Francisco."
+    }
+
+    var body: some View {
+        NavigationLink {
+            BayView(initialCode: station.code)
+        } label: {
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: "water.waves")
+                    .font(.title3)
+                    .foregroundStyle(Theme.harbor)
+                    .frame(width: 40, height: 40)
+                    .background(Theme.surface, in: Circle())
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("San Francisco Bay").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.ink)
+                    Text(detail).font(.footnote).foregroundStyle(Theme.inkSecondary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(Theme.inkSecondary.opacity(0.6))
+                    .accessibilityHidden(true)
+            }
+            .padding(14)
+            .background(Theme.neutralWash, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens the bay's tide propagation and timing")
     }
 }
