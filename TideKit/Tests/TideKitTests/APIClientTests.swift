@@ -99,4 +99,22 @@ final class APIClientTests: XCTestCase {
         let layered = LayeredCredentialStore(primary: InMemoryCredentialStore(), fallbacks: [InMemoryCredentialStore([.openMeteoAPIKey: "fallback"])])
         XCTAssertEqual(layered.secret(for: .openMeteoAPIKey), "fallback")
     }
+
+    func testCancellationStopsInFlightRequest() async throws {
+        struct SlowTransport: HTTPTransport {
+            func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+                try await Task.sleep(nanoseconds: 10_000_000_000)
+                return (Data(), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }
+        }
+        let api = APIClient(identity: identity, credentials: InMemoryCredentialStore(), transport: SlowTransport(),
+                            maxAttempts: 1, baseBackoff: 0.01, hostSpacing: [:])
+        let ep = try Endpoint.build(.noaaCoops, "https://api.tidesandcurrents.noaa.gov/slow")
+        let started = Date()
+        let task = Task { try await api.data(for: ep) }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        task.cancel()
+        _ = try? await task.value
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2, "cancellation should stop the request")
+    }
 }

@@ -5,9 +5,10 @@ import TideKit
 ///
 /// Both targets carry `TideAppGroup` and `TideKeychainGroup` in their
 /// Info.plist (set from Config/App.xcconfig) and the matching entitlements.
-/// When the App Group is unavailable (unsigned simulator builds), everything
-/// falls back to the current process's own storage, so the app still works
-/// and the widget shows its "open the app" state.
+/// If the group isn't configured in Info.plist, storage falls back to the
+/// current process's own defaults and caches. (With the key set but the
+/// entitlement missing, e.g. unsigned simulator builds, each process gets its
+/// own private copy, so the widget shows its "choose a station" state.)
 enum AppGroup {
     static let widgetKind = "TideWidget"
     static let urlScheme = "tideforecast"

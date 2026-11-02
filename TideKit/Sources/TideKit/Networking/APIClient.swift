@@ -133,12 +133,12 @@ public actor APIClient {
         let request = try authorize(endpoint)
         let key = Self.cacheKey(for: request)
         if endpoint.cacheTTL > 0, let hit = cache[key], hit.expires > Date() { return hit.data }
-        if let task = inFlight[key] { return try await task.value }
+        if let task = inFlight[key] { return try await Self.awaitCancellable(task) }
 
         let task = Task { try await self.perform(request, source: endpoint.source) }
         inFlight[key] = task
         defer { inFlight[key] = nil }
-        let data = try await task.value
+        let data = try await Self.awaitCancellable(task)
         if endpoint.cacheTTL > 0 {
             if cache.count > 200 {
                 let now = Date()
@@ -156,6 +156,13 @@ public actor APIClient {
         } catch {
             throw APIError.decoding(source: endpoint.source, message: Self.describe(error))
         }
+    }
+
+    /// Await a request task while forwarding the caller's cancellation to it
+    /// (an unstructured `Task` does not inherit cancellation), so timeouts
+    /// such as the widget's actually stop network work.
+    private static func awaitCancellable(_ task: Task<Data, Error>) async throws -> Data {
+        try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 
     // MARK: - Internals

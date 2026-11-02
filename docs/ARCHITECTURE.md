@@ -143,14 +143,16 @@ a Keychain access group (`<team>.<bundle id>.shared`):
 * **Station list and settings.** The app also writes the station catalog and the
   user's settings (units, datum, favorites) to the group, so the widget's station
   picker (an App Intents `EntityStringQuery`) works offline.
-* **Widget timelines.** The `AppIntentTimelineProvider` makes 16 entries,
-  15 minutes apart, from one snapshot, so the "now" marker, level and trend move
+* **Widget timelines.** The `AppIntentTimelineProvider` makes entries
+  15 minutes apart from one snapshot, so the "now" marker, level and trend move
   without network access.
 * **When the widget fetches.** If the snapshot is older than 45 minutes, in a
   different datum, or the user pressed the widget's refresh button (an interactive
   App Intent), the widget runs TideKit's normal `ForecastService` pipeline itself,
-  with a 48 h horizon and a 25 s timeout. It falls back to the saved snapshot on
-  failure and asks for a new timeline after 30 minutes (15 after a failure).
+  with a 48 h horizon and a 25 s timeout (cancellation reaches in-flight requests).
+  It falls back to the saved snapshot on failure, backs off for 45 minutes before
+  fetching again, and asks for a new timeline after 30 minutes (60 after a failure).
+  Entries cover up to 12 hours, so the widget keeps moving if reloads are throttled.
 * **Deep links.** Tapping a widget opens `tideforecast://station/<id>`.
 
 ## Networking and auth (`APIClient`)
