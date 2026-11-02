@@ -3,7 +3,7 @@ import TideKit
 
 /// "Slack Water": the app's design system. White space and hairlines carry
 /// the layout; harbor blue is measured water, swell amber is forecast or
-/// extra water, and flood colors appear only for flood risk.
+/// extra water, and warning colors appear only for NWS alerts and storms.
 ///
 /// Compiled into both the app and the widget extension.
 enum Theme {
@@ -28,39 +28,16 @@ enum Theme {
     static let swellWash = Color(light: 0xFDF1E7, dark: 0x3A2414)
     static let tideTable = Color(light: 0x7F95A3, dark: 0x6F8794)
 
-    // Flood
-    static let floodLine = Color(light: 0xC4552B, dark: 0xE7835A)
-    static let floodText = Color(light: 0x9E3F1C, dark: 0xF09A76)
+    // Warnings: stale data and calibration caveats (warning), NWS alerts and storms (alert)
+    static let warning = Color(light: 0xB35612, dark: 0xF0A266)
+    static let alert = Color(light: 0xB3261E, dark: 0xF08A84)
+    static let alertWash = Color(light: 0xF6D6D3, dark: 0x3A1614)
     static let calloutText = Color(light: 0x7A3A0C, dark: 0xF6C29A)
 
     // Layout
     static let margin: CGFloat = 20
     static let sectionGap: CGFloat = 26
     static let cardRadius: CGFloat = 18
-}
-
-extension FloodCategory {
-    /// Text/mark color for this category.
-    var tint: Color {
-        switch self {
-        case .none: return Theme.inkSecondary
-        case .action: return Color(light: 0x8A6D00, dark: 0xE2C45A)
-        case .minor: return Color(light: 0xB35612, dark: 0xF0A266)
-        case .moderate: return Color(light: 0xB3261E, dark: 0xF08A84)
-        case .major: return Color(light: 0x6E3AA0, dark: 0xC5A2EC)
-        }
-    }
-
-    /// Soft fill behind badges for this category.
-    var wash: Color {
-        switch self {
-        case .none: return Theme.neutralWash
-        case .action: return Color(light: 0xF6EED0, dark: 0x332A08)
-        case .minor: return Color(light: 0xFBE3D5, dark: 0x3A2414)
-        case .moderate: return Color(light: 0xF6D6D3, dark: 0x3A1614)
-        case .major: return Color(light: 0xE9DDF3, dark: 0x2A1A3A)
-        }
-    }
 }
 
 extension Color {
@@ -132,24 +109,7 @@ struct Chip: View {
     }
 }
 
-/// Flood category or probability badge.
-struct FloodBadge: View {
-    let category: FloodCategory
-    var probability: Double?
-
-    var body: some View {
-        let shown = category > .none ? category : .minor
-        Text(category > .none ? category.shortLabel : Fmt.percent(probability ?? 0))
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .foregroundStyle(shown.tint)
-            .background(shown.wash, in: Capsule())
-            .accessibilityLabel(category > .none ? category.label : "\(Fmt.percent(probability ?? 0)) chance of minor flooding")
-    }
-}
-
-/// The one tinted block a screen may carry: flood risk, an NWS alert or a storm.
+/// The one tinted block a screen may carry: an NWS alert or a storm.
 struct RiskCallout: View {
     let title: String
     let message: String?

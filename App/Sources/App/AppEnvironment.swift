@@ -12,6 +12,9 @@ final class AppEnvironment {
     let settings: AppSettings
     let stations: StationStore
     let location: LocationProvider
+    /// San Francisco Bay analysis, loaded when the map first shows the bay.
+    let bay = BayModel()
+    let router = AppRouter()
 
     init() {
         identity = AppIdentity.fromBundle()
@@ -35,5 +38,28 @@ final class AppEnvironment {
         if key == .ukAdmiraltySubscriptionKey {
             await stations.load(service: service, force: true)
         }
+    }
+}
+
+/// Cross-tab navigation: the tab on screen, and a request for the map to show
+/// San Francisco Bay (from a bay station's screen or `tideforecast://bay`).
+@MainActor
+@Observable
+final class AppRouter {
+    enum Tab: Hashable { case stations, map, settings }
+
+    struct BayFocus: Equatable {
+        /// Station to select, or nil for the default comparison.
+        let code: String?
+        let id = UUID()
+    }
+
+    var tab: Tab = .stations
+    /// Consumed by the map once it has moved there.
+    var bayFocus: BayFocus?
+
+    func showBay(code: String? = nil) {
+        bayFocus = BayFocus(code: code)
+        tab = .map
     }
 }

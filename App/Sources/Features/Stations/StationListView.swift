@@ -35,7 +35,7 @@ struct StationListView: View {
         }
         .background(Theme.mist)
         .navigationTitle("Tides")
-        .navigationDestination(for: Station.self) { StationDetailView(station: $0) }
+        .navigationDestination(for: Station.self) { StationDetailView(station: $0).id($0.id) }
         .searchable(text: $query, prompt: "Search stations")
         .refreshable {
             await store.load(service: env.service, force: true)
@@ -72,7 +72,7 @@ struct StationListView: View {
         if favoriteStations.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Keep your tides here").font(.headline)
-                Text("Star a station to see its water level, the next tide and flood risk at a glance. Your first favorite also fills the widget.")
+                Text("Star a station to see its water level, the next tide and the surge at a glance. Your first favorite also fills the widget.")
                     .font(.subheadline)
                     .foregroundStyle(Theme.inkSecondary)
             }
@@ -248,10 +248,6 @@ struct FavoriteCard: View {
                                 .foregroundStyle(a > 0.03 ? Theme.swellText : Theme.inkSecondary)
                         }
                         Spacer()
-                        let outlook = snapshot.floodOutlook(after: now)
-                        if outlook.category > .none || outlook.minorProbability >= 0.1 {
-                            FloodBadge(category: outlook.category, probability: outlook.minorProbability)
-                        }
                     }
                     .font(.caption)
                 } else if !updating {

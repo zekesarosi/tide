@@ -17,7 +17,7 @@ struct TideWidget: Widget {
             TideWidgetView(entry: entry)
         }
         .configurationDisplayName("Tide & Surge")
-        .description("Water level now, the next tides and flood risk for one station.")
+        .description("Water level now, the next tides and the surge for one station.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge,
                             .accessoryRectangular, .accessoryCircular, .accessoryInline])
     }
@@ -86,20 +86,11 @@ struct WidgetModel {
     var level: Double? { snap.level(at: date) }
     var rising: Bool? { snap.isRising(at: date) }
     var next: [ForecastSnapshot.Event] { snap.nextEvents(after: date, limit: 6) }
-    var outlook: (category: FloodCategory, minorProbability: Double) { snap.floodOutlook(after: date) }
     var stale: Bool { snap.isStale(at: date) }
 
     func len(_ v: Double?, signed: Bool = false) -> String { v.map { Fmt.length($0, unit, signed: signed) } ?? "–" }
     var arrow: String { rising == true ? "arrow.up.right" : "arrow.down.right" }
     func eventTitle(_ e: ForecastSnapshot.Event) -> String { e.kind == .high ? "High" : "Low" }
-
-    /// Show the risk line only when there is something to say.
-    var riskText: String? {
-        let o = outlook
-        if o.category > .none { return o.category.label }
-        if o.minorProbability >= 0.1 { return "\(Fmt.percent(o.minorProbability)) chance of flooding" }
-        return nil
-    }
 }
 
 // MARK: - Shared pieces
@@ -147,7 +138,6 @@ struct LevelHeader: View {
 struct EventRow: View {
     let m: WidgetModel
     let e: ForecastSnapshot.Event
-    var showRisk = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -156,13 +146,6 @@ struct EventRow: View {
             Text("\(m.eventTitle(e)) \(Fmt.time(e.date, in: m.tz))").font(.caption).lineLimit(1)
             Spacer(minLength: 4)
             Text(m.len(e.total)).font(.caption.weight(.semibold)).monospacedDigit()
-            if showRisk, e.kind == .high, e.category > .none || (e.minorFloodProbability ?? 0) >= 0.05 {
-                Text(e.category > .none ? e.category.shortLabel : Fmt.percent(e.minorFloodProbability ?? 0))
-                    .font(.caption2.weight(.bold))
-                    .padding(.horizontal, 4).padding(.vertical, 1)
-                    .background((e.category > .none ? e.category : FloodCategory.minor).wash, in: Capsule())
-                    .foregroundStyle((e.category > .none ? e.category : FloodCategory.minor).tint)
-            }
         }
     }
 }
@@ -185,10 +168,10 @@ struct UpdatedLine: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            if m.stale { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(FloodCategory.minor.tint) }
+            if m.stale { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning) }
             Text("Updated \(Fmt.time(m.snap.issued, in: m.tz))")
             if !m.snap.alertTitles.isEmpty {
-                Text("· \(m.snap.alertTitles[0])").foregroundStyle(FloodCategory.moderate.tint).lineLimit(1)
+                Text("· \(m.snap.alertTitles[0])").foregroundStyle(Theme.alert).lineLimit(1)
             }
         }
         .font(.caption2)
@@ -196,7 +179,7 @@ struct UpdatedLine: View {
     }
 }
 
-/// Forecast total with 80 % band, predicted tide, minor flood line and "now".
+/// Forecast total with 80 % band, predicted tide and "now".
 struct TideMiniChart: View {
     let m: WidgetModel
     let hoursBack: Double
@@ -214,14 +197,10 @@ struct TideMiniChart: View {
         let to: Date = m.date + hoursAhead * 3_600
         let pts: [ForecastSnapshot.ChartPoint] = m.snap.chartPoints(from: from, to: to)
         let u: LengthUnit = m.unit
-        let minor: Double? = m.snap.minorFlood.map(u.fromMeters)
         let values: [Double] = pts.flatMap { [$0.lower, $0.upper, $0.predicted, $0.total].compactMap { $0 } }.map(u.fromMeters)
         let lo: Double = values.min() ?? 0
         let hi: Double = values.max() ?? 1
-        // Show the flood line only when it is near (and not below) the data.
-        let showMinor: Bool = minor.map { $0 >= lo && $0 - hi < (hi - lo) * 0.5 } ?? false
-        let top: Double = showMinor ? max(hi, minor ?? hi) : hi
-        let pad: Double = max((top - lo) * 0.08, 0.05)
+        let pad: Double = max((hi - lo) * 0.08, 0.05)
 
         Chart {
             ForEach(pts) { p in
@@ -240,11 +219,6 @@ struct TideMiniChart: View {
                         .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
                 }
             }
-            if showMinor, let minor {
-                RuleMark(y: .value("Minor flood", minor))
-                    .foregroundStyle(Theme.floodLine.opacity(0.8))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-            }
             RuleMark(x: .value("Now", m.date))
                 .foregroundStyle(Theme.ink.opacity(0.2))
             if let now = m.level {
@@ -254,7 +228,7 @@ struct TideMiniChart: View {
             }
         }
         .chartXScale(domain: from...to)
-        .chartYScale(domain: (lo - pad)...(top + pad))
+        .chartYScale(domain: (lo - pad)...(hi + pad))
         .chartYAxis(.hidden)
         .chartPlotStyle { $0.clipped() }
         .chartXAxis {
@@ -281,11 +255,6 @@ struct SmallTideView: View {
             LevelHeader(m: m)
             Spacer(minLength: 0)
             ForEach(m.next.prefix(2)) { e in EventRow(m: m, e: e) }
-            if let risk = m.riskText {
-                Label(risk, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption2.weight(.semibold)).foregroundStyle(m.outlook.category > .none ? m.outlook.category.tint : Theme.swellText)
-                    .lineLimit(1)
-            }
         }
     }
 }
@@ -303,9 +272,6 @@ struct MediumTideView: View {
             .frame(maxWidth: 150)
             VStack(alignment: .trailing, spacing: 2) {
                 HStack {
-                    if let risk = m.riskText {
-                        Text(risk).font(.caption2.weight(.semibold)).foregroundStyle(Theme.swellText).lineLimit(1)
-                    }
                     Spacer(minLength: 0)
                     RefreshButton(stationID: m.snap.stationID)
                 }
@@ -323,20 +289,12 @@ struct LargeTideView: View {
             HStack(alignment: .top) {
                 LevelHeader(m: m, size: 34)
                 Spacer()
-                VStack(alignment: .trailing, spacing: 4) {
-                    RefreshButton(stationID: m.snap.stationID)
-                    if let risk = m.riskText {
-                        Text(risk).font(.caption.weight(.semibold))
-                            .foregroundStyle(m.outlook.category > .none ? m.outlook.category.tint : Theme.swellText)
-                    } else if m.snap.minorFlood != nil {
-                        Text("No flooding expected").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
+                RefreshButton(stationID: m.snap.stationID)
             }
             TideMiniChart(m: m, hoursBack: 6, hoursAhead: 42)
                 .frame(maxHeight: 150)
             VStack(spacing: 4) {
-                ForEach(m.next.prefix(5)) { e in EventRow(m: m, e: e, showRisk: true) }
+                ForEach(m.next.prefix(5)) { e in EventRow(m: m, e: e) }
             }
             Spacer(minLength: 0)
             UpdatedLine(m: m)
@@ -361,7 +319,7 @@ struct RectangularTideView: View {
             if let e = m.next.first {
                 Text("\(m.eventTitle(e)) \(Fmt.time(e.date, in: m.tz)) · \(m.len(e.total))").font(.caption)
             }
-            Text(m.riskText ?? m.snap.stationName).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            Text(m.snap.stationName).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

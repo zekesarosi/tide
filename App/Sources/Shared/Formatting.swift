@@ -36,6 +36,29 @@ enum Fmt {
         return date.formatted(style)
     }
 
+    /// A time difference in prose: "+14 min", "+2 h 19 min", "−46 min".
+    static func lag(_ seconds: TimeInterval) -> String {
+        let m = Int((seconds / 60).rounded())
+        let sign = m < 0 ? "\u{2212}" : "+"
+        let a = abs(m)
+        if a < 60 { return "\(sign)\(a) min" }
+        return a % 60 == 0 ? "\(sign)\(a / 60) h" : "\(sign)\(a / 60) h \(a % 60) min"
+    }
+
+    /// A time difference for tables, as NOAA prints them: "+0:14", "−0:46".
+    static func lagClock(_ seconds: TimeInterval) -> String {
+        let m = Int((seconds / 60).rounded())
+        return String(format: "%@%d:%02d", m < 0 ? "\u{2212}" : "+", abs(m) / 60, abs(m) % 60)
+    }
+
+    /// The spoken form of a lag: "14 minutes later", "46 minutes earlier".
+    static func lagSpoken(_ seconds: TimeInterval) -> String {
+        let m = Int((seconds / 60).rounded())
+        if m == 0 { return "at the same time" }
+        let d = Duration.seconds(abs(m) * 60).formatted(.units(allowed: [.hours, .minutes], width: .wide))
+        return m > 0 ? "\(d) later" : "\(d) earlier"
+    }
+
     static func percent(_ p: Double) -> String {
         if p < 0.01 { return "<1%" }
         if p > 0.99 { return ">99%" }
@@ -49,20 +72,5 @@ enum Fmt {
     static func compass(_ degrees: Double) -> String {
         let points = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
         return points[Int((degrees / 22.5).rounded()) % 16]
-    }
-}
-
-extension FloodCategory {
-    /// Category color from the Slack Water palette (see Theme).
-    var color: Color { tint }
-
-    var shortLabel: String {
-        switch self {
-        case .none: return "Normal"
-        case .action: return "Action"
-        case .minor: return "Minor"
-        case .moderate: return "Moderate"
-        case .major: return "Major"
-        }
     }
 }

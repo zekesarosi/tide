@@ -80,6 +80,35 @@ final class SurgeModelTests: XCTestCase {
         }
     }
 
+    func testDistantWeatherIsDampedAndWidensTheBand() throws {
+        let forcing = syntheticForcing(hours: 24 * 45 + 1)
+        let residuals = syntheticResiduals(forcing: forcing)
+        let issue = start + Double(24 * 33) * 3_600
+        let model = try SurgeModel.fit(residuals: residuals.sliced(from: start, to: issue),
+                                       forcing: forcing.filter { $0.date <= issue })
+        // Same forecast, with a deep low arriving either 1 or 9 days out.
+        func storm(at hours: Double) -> [MetSample] {
+            forcing.map { s in
+                var s = s
+                let x = (s.date.timeIntervalSince(issue) / 3_600 - hours) / 12
+                s.pressure -= 30 * exp(-x * x)
+                return s
+            }
+        }
+        func response(_ hours: Double) throws -> (shift: Double, sigma: Double) {
+            let calm = model.forecast(forcing: forcing, recentResiduals: residuals, issueTime: issue, horizonHours: 24 * 11)
+            let stormy = model.forecast(forcing: storm(at: hours), recentResiduals: residuals, issueTime: issue, horizonHours: 24 * 11)
+            let i = try XCTUnwrap(calm.firstIndex { abs($0.date.timeIntervalSince(issue) / 3_600 - hours) < 0.5 })
+            return (stormy[i].mean - calm[i].mean, stormy[i].sigma - calm[i].sigma)
+        }
+        let near = try response(24), far = try response(24 * 9)
+        XCTAssertGreaterThan(near.shift, 0.1)                       // inverse barometer, taken at face value
+        XCTAssertLessThan(far.shift, near.shift * 0.4)               // 9 days out: mostly distrusted…
+        XCTAssertGreaterThan(far.sigma, near.sigma + near.shift * 0.4) // …and carried as uncertainty
+        XCTAssertEqual(SurgeModel.weatherSkill(atLead: 24), 1)
+        XCTAssertLessThan(SurgeModel.weatherSkill(atLead: 24 * 9), 0.3)
+    }
+
     func testInsufficientData() {
         let forcing = syntheticForcing(hours: 60)
         XCTAssertThrowsError(try SurgeModel.fit(residuals: syntheticResiduals(forcing: forcing), forcing: forcing))
@@ -200,6 +229,46 @@ final class ForecasterTests: XCTestCase {
             XCTAssertLessThanOrEqual(lo.value, m.value)
             XCTAssertGreaterThanOrEqual(hi.value, m.value)
         }
+    }
+
+    func testLongRangeOutlookRunsPastTheWeatherForecast() throws {
+        let predictor = try batteryPredictor()
+        let trainStart = now - 33 * 86_400
+        let weatherDays = 10.0
+        let met = forcing(from: trainStart, hours: 33 * 24 + Int(weatherDays * 24))
+        // Observed: tide plus a steady +0.12 m anomaly with a little wobble.
+        var obs: [TimeSeriesPoint] = []
+        var t = trainStart
+        while t <= now {
+            obs.append(.init(date: t, value: predictor.height(at: t) + 0.12 + 0.03 * sin(t.timeIntervalSince1970 / 40_000)))
+            t += 360
+        }
+        let station = Station(source: .noaaCoops, code: "8518750", name: "The Battery", latitude: 40.7, longitude: -74.01)
+        let horizonHours = 90 * 24
+        let input = ForecastInputs(station: station, datum: .mllw, issueTime: now, horizonHours: horizonHours,
+                                   astronomical: .harmonic(predictor), observations: TimeSeries(points: obs), forcing: met)
+        let f = TotalWaterLevelForecaster.forecast(input)
+
+        let weatherEnd = try XCTUnwrap(f.weatherHorizon)
+        XCTAssertLessThanOrEqual(weatherEnd, now + weatherDays * 86_400)
+        XCTAssertTrue(f.notes.contains { $0.contains("weather forecast ends") }, "\(f.notes)")
+
+        // The total curve and the tide events reach the horizon.
+        let end = now + Double(horizonHours) * 3_600
+        XCTAssertGreaterThan(try XCTUnwrap(f.total.last?.date), end - 3_600)
+        XCTAssertGreaterThan(try XCTUnwrap(f.events.last?.date), end - 13 * 3_600)
+        XCTAssertGreaterThan(f.events.count, 300)
+
+        // Far out, the surge sits at the station's typical anomaly and the
+        // band at its typical spread (0.03 m wobble → floor of 0.05 m);
+        // events stay consistent.
+        let far = f.surge.filter { $0.date > weatherEnd + 20 * 86_400 }
+        XCTAssertFalse(far.isEmpty)
+        for p in far {
+            XCTAssertEqual(p.surge, 0.12, accuracy: 0.03)
+            XCTAssertEqual(p.sigma, 0.05, accuracy: 0.01)
+        }
+        for e in f.events { XCTAssertEqual(e.total, e.astronomical + e.surge, accuracy: 1e-9) }
     }
 
     func testNoObservationsFallsBackToUncalibrated() throws {

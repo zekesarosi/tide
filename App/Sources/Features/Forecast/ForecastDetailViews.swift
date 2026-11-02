@@ -42,41 +42,22 @@ struct NextTidesGrid: View {
     }
 }
 
-// MARK: - Flood outlook
+// MARK: - Highest water
 
-/// "Highest water X, Y below minor flooding" with a ruler from 0 to past the
-/// flood level.
-struct FloodOutlookSection: View {
+/// "Highest water X on Saturday at 6:27 AM."
+struct HighestWaterSection: View {
     let forecast: WaterLevelForecast
     let peak: ForecastEvent?
     let unit: LengthUnit
     let tz: TimeZone
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let peak, let minor = forecast.thresholds?.minor {
-                let margin = minor - peak.total
-                (Text("Highest water ") + Text(Fmt.length(peak.total, unit)).fontWeight(.semibold)
-                    + Text(" \(Fmt.dayName(peak.date, in: tz, relativeTo: forecast.issued).lowercasedIfToday) at \(Fmt.time(peak.date, in: tz)), ")
-                    + Text("\(Fmt.length(abs(margin), unit)) \(margin >= 0 ? "below" : "above")").fontWeight(.semibold)
-                    + Text(" minor flooding."))
-                    .font(.body)
-                FloodRuler(peak: peak.total, minor: minor, moderate: forecast.thresholds?.moderate,
-                           floor: min(0, forecast.total.minimum?.value ?? 0), unit: unit)
-                let p = peak.exceedance[.minor] ?? 0
-                Text("\(Fmt.percent(p)) chance of minor flooding at that high tide. \(forecast.thresholds?.authority ?? "NWS") minor flood level \(Fmt.length(minor, unit)).")
-                    .font(.footnote)
-                    .foregroundStyle(Theme.inkSecondary)
-            } else {
-                if let peak {
-                    (Text("Highest water ") + Text(Fmt.length(peak.total, unit)).fontWeight(.semibold)
-                        + Text(" \(Fmt.dayName(peak.date, in: tz, relativeTo: forecast.issued).lowercasedIfToday) at \(Fmt.time(peak.date, in: tz))."))
-                        .font(.body)
-                }
-                Text("No flood levels are published for this station.")
-                    .font(.footnote)
-                    .foregroundStyle(Theme.inkSecondary)
-            }
+        if let peak {
+            (Text("Highest water ") + Text(Fmt.length(peak.total, unit)).fontWeight(.semibold)
+                + Text(" \(Fmt.dayName(peak.date, in: tz, relativeTo: forecast.issued).lowercasedIfToday) at \(Fmt.time(peak.date, in: tz))")
+                + Text(", likely \(Fmt.length(peak.lower80, unit))–\(Fmt.length(peak.upper80, unit)).")
+                + Text(forecast.weatherHorizon.map { peak.date > $0 } == true ? " Long-range outlook: tide table plus typical surge." : ""))
+                .font(.body)
         }
     }
 }
@@ -84,43 +65,6 @@ struct FloodOutlookSection: View {
 private extension String {
     /// "Today" reads better lower-cased mid-sentence.
     var lowercasedIfToday: String { self == "Today" || self == "Tomorrow" ? lowercased() : "on \(self)" }
-}
-
-struct FloodRuler: View {
-    let peak: Double
-    let minor: Double
-    let moderate: Double?
-    let floor: Double
-    let unit: LengthUnit
-
-    var body: some View {
-        let top = max(peak, moderate ?? minor) + max((minor - floor) * 0.12, 0.1)
-        let span = max(top - floor, 0.01)
-        let peakFrac = min(max((peak - floor) / span, 0), 1)
-        let minorFrac = min(max((minor - floor) / span, 0), 1)
-        GeometryReader { geo in
-            let w = geo.size.width
-            ZStack(alignment: .topLeading) {
-                Capsule().fill(Theme.neutralWash).frame(height: 8).offset(y: 18)
-                Capsule().fill(FloodCategory.minor.wash)
-                    .frame(width: w * (1 - minorFrac), height: 8)
-                    .offset(x: w * minorFrac, y: 18)
-                Capsule().fill(peak >= minor ? Theme.swell : Theme.harbor)
-                    .frame(width: max(w * peakFrac, 8), height: 8)
-                    .offset(y: 18)
-                RoundedRectangle(cornerRadius: 1).fill(Theme.ink)
-                    .frame(width: 2, height: 20)
-                    .offset(x: w * peakFrac - 1, y: 12)
-                Text(Fmt.length(floor, unit)).font(.caption2).foregroundStyle(Theme.inkSecondary).offset(y: 32)
-                Text("Minor").font(.caption2).foregroundStyle(Theme.floodText)
-                    .fixedSize()
-                    .offset(x: min(w * minorFrac - 14, w - 36), y: 32)
-            }
-        }
-        .frame(height: 48)
-        .accessibilityElement()
-        .accessibilityLabel("Highest water \(Fmt.length(peak, unit)), minor flood level \(Fmt.length(minor, unit))")
-    }
 }
 
 // MARK: - Why the water is high
@@ -227,9 +171,6 @@ struct AllTidesView: View {
                                 Text("\(Fmt.length(e.lower80, unit))–\(Fmt.length(e.upper80, unit))")
                                     .font(.caption2).foregroundStyle(Theme.inkSecondary).monospacedDigit()
                             }
-                            if e.kind == .high, e.category > .none || (e.exceedance[.minor] ?? 0) >= 0.05 {
-                                FloodBadge(category: e.category, probability: e.exceedance[.minor])
-                            }
                         }
                         .accessibilityElement(children: .combine)
                     }
@@ -302,7 +243,7 @@ struct ModelDiagnosticsView: View {
         VStack(alignment: .leading, spacing: 10) {
             Label(methodDescription, systemImage: d.calibrated ? "checkmark.seal" : "exclamationmark.triangle")
                 .font(.subheadline)
-                .foregroundStyle(d.calibrated ? Theme.ink : FloodCategory.minor.tint)
+                .foregroundStyle(d.calibrated ? Theme.ink : Theme.warning)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
                 if let m = d.hindcast24hRMS, let p = d.persistence24hRMS {
                     item("24 h error (out of sample)", "\(Fmt.length(m, unit)) vs \(Fmt.length(p, unit)) persistence")
@@ -350,7 +291,7 @@ struct SourcesView: View {
                 ForEach(result.sources) { s in
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: s.ok ? "checkmark.circle" : "exclamationmark.circle")
-                            .foregroundStyle(s.ok ? Theme.harbor : FloodCategory.moderate.tint)
+                            .foregroundStyle(s.ok ? Theme.harbor : Theme.alert)
                         VStack(alignment: .leading, spacing: 1) {
                             Text("\(DataSourceInfo.info(s.source).name), \(s.component)").font(.footnote)
                             if let m = s.message { Text(m).font(.caption2).foregroundStyle(Theme.inkSecondary) }

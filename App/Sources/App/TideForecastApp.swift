@@ -18,15 +18,16 @@ struct TideForecastApp: App {
 }
 
 struct RootView: View {
-    enum Tab: Hashable { case stations, map, settings }
+    typealias Tab = AppRouter.Tab
 
+    @Environment(AppEnvironment.self) private var env
     @Environment(StationStore.self) private var store
-    @State private var tab: Tab = .stations
     @State private var stationPath: [Station] = []
     @State private var pendingStationID: String?
 
     var body: some View {
-        TabView(selection: $tab) {
+        @Bindable var router = env.router
+        TabView(selection: $router.tab) {
             NavigationStack(path: $stationPath) { StationListView() }
                 .tabItem { Label("Tides", systemImage: "water.waves") }
                 .tag(Tab.stations)
@@ -40,6 +41,10 @@ struct RootView: View {
         .tint(Theme.harbor)
         // Widgets open `tideforecast://station/<id>`.
         .onOpenURL { url in
+            if let code = AppGroup.bayStationCode(from: url) {
+                env.router.showBay(code: code.isEmpty ? nil : code)
+                return
+            }
             guard let id = AppGroup.stationID(from: url) else { return }
             pendingStationID = id
             openPendingStation()
@@ -50,7 +55,7 @@ struct RootView: View {
     private func openPendingStation() {
         guard let id = pendingStationID, let station = store.station(id: id) else { return }
         pendingStationID = nil
-        tab = .stations
+        env.router.tab = .stations
         stationPath = [station]
     }
 }

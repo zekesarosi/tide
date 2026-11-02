@@ -56,6 +56,13 @@ enum AppGroup {
         return c.url ?? URL(string: "\(urlScheme)://")!
     }
 
+    /// `tideforecast://bay` or `tideforecast://bay/<NOAA code>` opens the
+    /// San Francisco Bay screen; the result is the station code to select ("" for none).
+    static func bayStationCode(from url: URL) -> String? {
+        guard url.scheme == urlScheme, url.host == "bay" else { return nil }
+        return String(url.path.dropFirst())
+    }
+
     static func stationID(from url: URL) -> String? {
         guard url.scheme == urlScheme, url.host == "station" else { return nil }
         let id = String(url.path.dropFirst())
