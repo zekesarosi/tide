@@ -1,0 +1,14 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+.swiftpm/
+.build/
+Package.resolved
+
+# Local secrets (see Config/Secrets.example.xcconfig)
+Config/Secrets.xcconfig
+
+.DS_Store
