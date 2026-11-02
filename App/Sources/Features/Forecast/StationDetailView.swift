@@ -288,24 +288,25 @@ private struct LoadingHero: View {
     }
 }
 
-/// The way into the San Francisco Bay screen from a bay station.
+/// From a bay station to the bay on the map, with this station selected.
 private struct BayEntryCard: View {
+    @Environment(AppEnvironment.self) private var env
     let station: Station
     let highLag: TimeInterval?
 
     private var detail: String {
         if station.code == SFBay.referenceCode {
-            return "Watch high water travel from the Golden Gate into the South Bay and up to Carquinez Strait."
+            return "Watch high water travel from the Golden Gate into the South Bay and up to Carquinez Strait, on the map."
         }
         if let lag = highLag {
-            return "High water here comes \(Fmt.lagSpoken(lag)) than at San Francisco. See how the tide moves through the bay."
+            return "High water here comes \(Fmt.lagSpoken(lag)) than at San Francisco. Watch the tide move through the bay on the map."
         }
-        return "See how the tide moves through the bay, and this station's timing against San Francisco."
+        return "Watch the tide move through the bay on the map, with this station's timing against San Francisco."
     }
 
     var body: some View {
-        NavigationLink {
-            BayView(initialCode: station.code)
+        Button {
+            env.router.showBay(code: station.code)
         } label: {
             HStack(alignment: .center, spacing: 14) {
                 Image(systemName: "water.waves")
@@ -321,7 +322,7 @@ private struct BayEntryCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(Theme.inkSecondary.opacity(0.6))
+                Image(systemName: "map").font(.footnote.weight(.semibold)).foregroundStyle(Theme.harbor)
                     .accessibilityHidden(true)
             }
             .padding(14)
@@ -329,6 +330,6 @@ private struct BayEntryCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityHint("Opens the bay's tide propagation and timing")
+        .accessibilityHint("Shows the bay's tides on the map")
     }
 }

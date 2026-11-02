@@ -37,7 +37,7 @@ xcodebuildmcp simulator build-and-run \
 
 - Bundle id (default config): `com.example.tideforecast`.
 - Deep link: `tideforecast://station/<source>:<code>`, e.g. `tideforecast://station/noaa-coops:8518750`.
-  San Francisco Bay screen: `tideforecast://bay` or `tideforecast://bay/<NOAA code>` (selects that station).
+  San Francisco Bay (Map tab, zoomed to the bay): `tideforecast://bay` or `tideforecast://bay/<NOAA code>` (selects that station).
   `swift run --package-path TideKit tide-cli bay` prints the bay offsets table against NOAA's own hi/lo tables.
   A bare code (`.../station/8518750`) is ignored. `simctl openurl` shows an "Open in Tide & Surge?" dialog.
 - Good smoke-test stations: The Battery NY (`noaa-coops:8518750`, tidal + NWS blend + flood levels),

@@ -1,219 +1,177 @@
 import SwiftUI
 import TideKit
 
-/// San Francisco Bay: watch the tide travel from the Golden Gate into the
-/// South Bay and up through Carquinez Strait, and read each station's timing
-/// against the San Francisco gauge.
+/// The bay on the Map tab: a compact panel over the map with the animation
+/// controls and the selected station's timing, and a way into the details.
 @MainActor
-struct BayView: View {
-    @Environment(AppEnvironment.self) private var env
-    @Environment(AppSettings.self) private var settings
+struct BayPanel: View {
+    let analysis: BayAnalysis
+    let day: BayDay
+    let clock: BayClock
+    @Binding var selected: String
+    let unit: LengthUnit
+    let onDetails: () -> Void
+
     @Environment(StationStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// The station highlighted on the map and strip.
-    @State private var selected: String
-    @State private var clock = BayClock(time: Date())
-
-    init(initialCode: String? = nil) {
-        let code = initialCode.flatMap { SFBay.station(code: $0)?.code }
-        _selected = State(initialValue: code == nil || code == SFBay.referenceCode ? SFBay.defaultComparisonCode : code!)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("San Francisco Bay")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Theme.ink)
+                Spacer()
+                Button(action: onDetails) {
+                    HStack(spacing: 3) {
+                        Text("Timing")
+                        Image(systemName: "chevron.up").font(.caption2.weight(.bold))
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .frame(minHeight: 30)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.harbor)
+                .accessibilityLabel("Bay timing details")
+            }
+            ScrubberBar(day: day, clock: clock, selected: day.row(selected), unit: unit, reduceMotion: reduceMotion)
+            stationLine
+        }
+        .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
     }
 
-    private var model: BayModel { env.bay }
-    private var unit: LengthUnit { settings.unit }
-    private var tz: TimeZone { SFBay.timeZone }
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    header
-                    if let a = model.analysis, let day = model.day {
-                        content(a, day, proxy: proxy)
-                    } else if case .failed(let message) = model.phase {
-                        ContentUnavailableView {
-                            Label("Bay tides unavailable", systemImage: "wifi.exclamationmark")
-                        } description: {
-                            Text(message)
-                        } actions: {
-                            Button("Try again") { Task { await model.load(service: env.service) } }
-                                .buttonStyle(.bordered)
-                        }
-                        .padding(.top, 40)
+    /// "Sausalito · high water 14 min after San Francisco · Forecast ›"
+    @ViewBuilder
+    private var stationLine: some View {
+        if let s = analysis.station(code: selected) {
+            HStack(spacing: 6) {
+                Group {
+                    if s.station.code == analysis.referenceCode {
+                        Text("\(s.station.shortName) · the reference gauge")
+                    } else if let lag = s.offsets?.high?.mean {
+                        Text("\(s.station.shortName) · high water ") + Text(Fmt.lag(lag)).fontWeight(.semibold).foregroundStyle(Theme.harbor)
+                            + Text(" vs SF")
                     } else {
-                        loading
+                        Text(s.station.shortName)
                     }
                 }
-                .padding(.bottom, 32)
-            }
-        }
-        .background(Theme.surface)
-        .navigationTitle("San Francisco Bay")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                Text("San Francisco Bay").font(.subheadline.weight(.semibold)).opacity(0).accessibilityHidden(true)
-            }
-            if model.phase == .loading && model.analysis != nil {
-                ToolbarItem(placement: .topBarTrailing) { ProgressView().controlSize(.small) }
-            }
-        }
-        .refreshable { await model.load(service: env.service) }
-        .task {
-            await model.loadIfNeeded(service: env.service)
-            if let day = model.day { clock.time = day.clamp(Date()) }
-        }
-        .task(id: clock.playing) { await play() }
-        .onDisappear { clock.playing = false }
-    }
-
-    // MARK: Playback
-
-    /// One hour of tide per second, so a tidal day plays in about 25 s.
-    /// With Reduce Motion it steps a quarter hour at a time instead.
-    private func play() async {
-        guard clock.playing, let day = model.day else { return }
-        if clock.time >= day.end - 60 { clock.time = day.start }
-        var last = Date()
-        while clock.playing, !Task.isCancelled {
-            if reduceMotion {
-                try? await Task.sleep(for: .milliseconds(700))
-                clock.time += 15 * 60
-            } else {
-                try? await Task.sleep(for: .milliseconds(33))
-                let now = Date()
-                clock.time += now.timeIntervalSince(last) * 3_600
-                last = now
-            }
-            if clock.time >= day.end { clock.time = day.start }
-        }
-    }
-
-    // MARK: Header
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("SAN FRANCISCO BAY")
-                .font(.caption.weight(.semibold))
-                .tracking(1.4)
-                .foregroundStyle(Theme.inkSecondary)
-            Text("\(SFBay.stations.count) NOAA stations · tide table · Pacific time")
                 .font(.footnote)
                 .foregroundStyle(Theme.inkSecondary)
-        }
-        .padding(.horizontal, Theme.margin)
-        .padding(.top, 4)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var loading: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            RoundedRectangle(cornerRadius: 6).fill(Theme.neutralWash).frame(height: 44)
-            RoundedRectangle(cornerRadius: Theme.cardRadius).fill(Theme.neutralWash).frame(height: 400)
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Reading the tide at \(SFBay.stations.count) stations around the bay…")
-                    .font(.footnote).foregroundStyle(Theme.inkSecondary)
-            }
-        }
-        .padding(.horizontal, Theme.margin)
-        .padding(.top, 20)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Loading bay tides")
-    }
-
-    // MARK: Content
-
-    @ViewBuilder
-    private func content(_ a: BayAnalysis, _ day: BayDay, proxy: ScrollViewProxy) -> some View {
-        if let sentence = headline(a) {
-            Text(sentence)
-                .font(.title3)
-                .foregroundStyle(Theme.ink)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, Theme.margin)
-                .padding(.top, 14)
-        }
-
-        VStack(spacing: 12) {
-            BayMapView(day: day, clock: clock, unit: unit, selected: $selected)
-                .frame(height: 420)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous).strokeBorder(Theme.hairline))
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("Map of the bay's tide stations")
-            ScrubberBar(day: day, clock: clock, selected: day.row(selected), unit: unit, reduceMotion: reduceMotion)
-            MarkerLegend()
-        }
-        .padding(.horizontal, Theme.margin)
-        .padding(.top, 16)
-
-        VStack(alignment: .leading, spacing: 12) {
-            SectionLabel("High water through the bay")
-            PropagationStrip(day: day, clock: clock, selected: $selected) { t in
-                clock.playing = false
-                clock.time = day.clamp(t)
-            }
-            HStack(spacing: 6) {
-                Text("Low")
-                LinearGradient(colors: HeatScale.fill, startPoint: .leading, endPoint: .trailing)
-                    .frame(width: 56, height: 8)
-                    .clipShape(Capsule())
-                Text("High")
-                Circle().fill(Theme.swellDot).frame(width: 6, height: 6).padding(.leading, 10)
-                Text("Time of high water")
-            }
-            .font(.caption)
-            .foregroundStyle(Theme.inkSecondary)
-            .accessibilityHidden(true)
-            Text("Each row is shaded from that station's low water to its high water; the amber dots step later down each arm of the bay. Drag across the strip to scrub.")
-                .font(.caption)
-                .foregroundStyle(Theme.inkSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.horizontal, Theme.margin)
-        .padding(.top, Theme.sectionGap)
-
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                SectionLabel("Timing vs San Francisco")
-                Spacer()
-                stationMenu(a)
-            }
-            BayComparisonView(analysis: a, code: selected, unit: unit, now: a.generated)
-            if let s = store.station(id: "\(DataSourceID.noaaCoops.rawValue):\(selected)") {
-                NavigationLink {
-                    StationDetailView(station: s).id(s.id)
-                } label: {
-                    Text("\(s.name) forecast").frame(minHeight: 44)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                Spacer(minLength: 4)
+                if let st = store.station(id: "\(DataSourceID.noaaCoops.rawValue):\(selected)") {
+                    NavigationLink(value: st) {
+                        HStack(spacing: 3) {
+                            Text("Forecast")
+                            Image(systemName: "chevron.right").font(.caption2.weight(.bold))
+                        }
+                        .font(.footnote.weight(.semibold))
+                        .frame(minHeight: 30)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.harbor)
                 }
             }
         }
-        .id("comparison")
-        .padding(.horizontal, Theme.margin)
-        .padding(.top, Theme.sectionGap)
+    }
+}
 
-        VStack(alignment: .leading, spacing: 12) {
-            SectionLabel("All stations")
-            BayOffsetsTable(analysis: a, selected: selected) { code in
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
-                    selected = code
-                    proxy.scrollTo("comparison", anchor: .top)
+/// Everything about the bay's timing, in a sheet over the map: the headline,
+/// the propagation strip, the selected station against San Francisco, and
+/// the all-stations table. Shares the map's clock and selection.
+@MainActor
+struct BayDetailsSheet: View {
+    let analysis: BayAnalysis
+    let day: BayDay
+    let clock: BayClock
+    @Binding var selected: String
+    let unit: LengthUnit
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let a = analysis
+        NavigationStack {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        if let sentence = headline(a) {
+                            Text(sentence)
+                                .font(.title3)
+                                .foregroundStyle(Theme.ink)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.top, 6)
+                        }
+
+                        VStack(alignment: .leading, spacing: 12) {
+                            SectionLabel("High water through the bay")
+                            PropagationStrip(day: day, clock: clock, selected: $selected) { t in
+                                clock.playing = false
+                                clock.time = day.clamp(t)
+                            }
+                            HStack(spacing: 6) {
+                                Text("Low")
+                                LinearGradient(colors: HeatScale.fill, startPoint: .leading, endPoint: .trailing)
+                                    .frame(width: 56, height: 8)
+                                    .clipShape(Capsule())
+                                Text("High")
+                                Circle().fill(Theme.swellDot).frame(width: 6, height: 6).padding(.leading, 10)
+                                Text("Time of high water")
+                            }
+                            .font(.caption)
+                            .foregroundStyle(Theme.inkSecondary)
+                            .accessibilityHidden(true)
+                            Text("Each row is shaded from that station's low water to its high water; the amber dots step later down each arm of the bay. Drag across the strip to move the map's time.")
+                                .font(.caption)
+                                .foregroundStyle(Theme.inkSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.top, Theme.sectionGap)
+
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(alignment: .firstTextBaseline) {
+                                SectionLabel("Timing vs San Francisco")
+                                Spacer()
+                                stationMenu(a)
+                            }
+                            BayComparisonView(analysis: a, code: selected, unit: unit, now: a.generated)
+                        }
+                        .id("comparison")
+                        .padding(.top, Theme.sectionGap)
+
+                        VStack(alignment: .leading, spacing: 12) {
+                            SectionLabel("All stations")
+                            BayOffsetsTable(analysis: a, selected: selected) { code in
+                                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
+                                    selected = code
+                                    proxy.scrollTo("comparison", anchor: .top)
+                                }
+                            }
+                            HStack(spacing: 6) {
+                                Circle().fill(Theme.harbor).frame(width: 5, height: 5)
+                                Text("Live gauge").font(.caption).foregroundStyle(Theme.inkSecondary)
+                            }
+                            .accessibilityHidden(true)
+                        }
+                        .padding(.top, Theme.sectionGap)
+
+                        methodNote(a)
+                            .padding(.top, 20)
+                    }
+                    .padding(.horizontal, Theme.margin)
+                    .padding(.bottom, 32)
                 }
             }
-            HStack(spacing: 6) {
-                Circle().fill(Theme.harbor).frame(width: 5, height: 5)
-                Text("Live gauge").font(.caption).foregroundStyle(Theme.inkSecondary)
+            .background(Theme.surface)
+            .navigationTitle("Bay timing")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
-            .accessibilityHidden(true)
         }
-        .padding(.horizontal, Theme.margin)
-        .padding(.top, Theme.sectionGap)
-
-        methodNote(a)
-            .padding(.horizontal, Theme.margin)
-            .padding(.top, 20)
     }
 
     private func stationMenu(_ a: BayAnalysis) -> some View {
@@ -274,7 +232,7 @@ struct BayView: View {
 
 /// Play/pause, the moment being shown, and a slider across the tidal day.
 /// Its own view: it reads the clock, the screen doesn't.
-private struct ScrubberBar: View {
+struct ScrubberBar: View {
     let day: BayDay
     let clock: BayClock
     let selected: BayDay.Row?
@@ -350,7 +308,7 @@ private struct ScrubberBar: View {
 }
 
 /// What the map markers mean.
-private struct MarkerLegend: View {
+struct MarkerLegend: View {
     var body: some View {
         HStack(spacing: 14) {
             HStack(spacing: 5) {

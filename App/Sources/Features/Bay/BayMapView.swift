@@ -2,57 +2,22 @@ import MapKit
 import SwiftUI
 import TideKit
 
-/// The bay on a quiet basemap with one live marker per station: a disc that
-/// fills with water from low (empty) to high (full) over the tidal day, a
-/// rising/falling tick, and an amber ring while it is high water there.
-/// Point Reyes, out on the open coast, sits in an inset.
-struct BayMapView: View {
-    let day: BayDay
-    let clock: BayClock
-    let unit: LengthUnit
-    @Binding var selected: String
-
-    @State private var position: MapCameraPosition = .region(MKCoordinateRegion(
-        center: CLLocationCoordinate2D(latitude: 37.765, longitude: -122.27),
-        span: MKCoordinateSpan(latitudeDelta: 0.68, longitudeDelta: 0.5)))
-
-    /// Where each station's name goes, chosen so neighbours don't collide.
-    /// Stations without an entry show a name only when selected.
+/// Live bay station markers for the Map tab: a disc that fills with water
+/// from low (empty) to high (full) over the tidal day, a rising/falling
+/// tick, and an amber ring while it is high water there.
+enum BayMarkers {
+    /// Where each station's name goes, chosen so neighbours don't collide at
+    /// whole-bay zoom. Stations without an entry show a name only when
+    /// selected or when zoomed in.
     static let labels: [String: Alignment] = [
         "9414290": .bottom, "9414806": .leading, "9414863": .trailing, "9414750": .trailing,
         "9414523": .leading, "9414575": .leading, "9415056": .trailing, "9415102": .bottom, "9415144": .top,
-        "9414458": .trailing,
+        "9414458": .trailing, "9415020": .trailing,
     ]
-
-    var body: some View {
-        Map(position: $position, interactionModes: [.pan, .zoom]) {
-            ForEach(day.rows.filter { $0.station.region != .coast }) { row in
-                Annotation(row.station.shortName,
-                           coordinate: CLLocationCoordinate2D(latitude: row.station.latitude, longitude: row.station.longitude),
-                           anchor: .center) {
-                    StationPin(row: row, start: day.start, clock: clock, unit: unit,
-                               label: Self.labels[row.station.code] ?? (selected == row.station.code ? .bottom : nil),
-                               isSelected: selected == row.station.code)
-                        .onTapGesture { selected = row.station.code }
-                }
-                .annotationTitles(.hidden)
-            }
-        }
-        .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll, showsTraffic: false))
-        .mapControls { MapScaleView() }
-        .overlay(alignment: .topLeading) {
-            if let coast = day.rows.first(where: { $0.station.region == .coast }) {
-                CoastInset(row: coast, start: day.start, clock: clock, unit: unit,
-                           isSelected: selected == coast.station.code)
-                    .onTapGesture { selected = coast.station.code }
-                    .padding(8)
-            }
-        }
-    }
 }
 
 /// A station marker. Reads the clock, so only markers redraw while playing.
-private struct StationPin: View {
+struct BayPin: View {
     let row: BayDay.Row
     let start: Date
     let clock: BayClock
@@ -122,37 +87,6 @@ private struct CenterSquare: Shape {
     let side: CGFloat
     func path(in rect: CGRect) -> Path {
         Path(CGRect(x: rect.midX - side / 2, y: rect.midY - side / 2, width: side, height: side))
-    }
-}
-
-/// The open-coast reference, off the edge of the bay map.
-private struct CoastInset: View {
-    let row: BayDay.Row
-    let start: Date
-    let clock: BayClock
-    let unit: LengthUnit
-    let isSelected: Bool
-
-    var body: some View {
-        let t = clock.time
-        HStack(spacing: 7) {
-            WaterDisc(fraction: row.fraction(at: t, start: start), rising: row.rising(at: t, start: start),
-                      atHigh: row.extreme(near: t).map { $0.kind == .high } ?? false, size: 18, emphasized: isSelected)
-            VStack(alignment: .leading, spacing: 0) {
-                Text("‹ OPEN COAST").font(.system(size: 8, weight: .semibold)).tracking(0.6).foregroundStyle(Theme.inkSecondary)
-                Text(row.station.shortName).font(.caption2.weight(.semibold)).foregroundStyle(Theme.ink)
-            }
-        }
-        .padding(.leading, 6)
-        .padding(.trailing, 10)
-        .padding(.vertical, 5)
-        .background(.regularMaterial, in: Capsule())
-        .overlay { if isSelected { Capsule().strokeBorder(Theme.ink.opacity(0.5), lineWidth: 1) } }
-        .contentShape(Capsule())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(row.station.name), open coast")
-        .accessibilityValue(BayText.state(row: row, at: t, start: start, unit: unit))
-        .accessibilityAddTraits(.isButton)
     }
 }
 
