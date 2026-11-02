@@ -68,7 +68,7 @@ final class StationStore {
             let r = s.region ?? ""
             return r.isEmpty ? DataSourceInfo.info(s.source).agency : r
         }
-        .map { ($0.key, $0.value.sorted { $0.name < $1.name }) }
+        .map { (region: $0.key, stations: $0.value.sorted { $0.name < $1.name }) }
         .sorted { $0.region < $1.region }
     }
 }

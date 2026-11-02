@@ -18,7 +18,7 @@ struct TideChartView: View {
     @State private var selection: Date?
 
     struct Point: Identifiable {
-        let id = UUID()
+        var id: String { "\(series.rawValue)-\(date.timeIntervalSince1970)" }
         let date: Date
         let value: Double
         let series: Series
@@ -84,7 +84,7 @@ struct TideChartView: View {
 
     private var yDomain: ClosedRange<Double> {
         let values = points.map(\.value) + band.flatMap { [$0.lo, $0.hi] }
-        guard var lo = values.min(), var hi = values.max() else { return 0...1 }
+        guard var lo = values.min(), var hi = values.max(), lo.isFinite, hi.isFinite, lo < hi else { return 0...1 }
         // Show the minor threshold when it is reasonably close to the data.
         if let minor = thresholds.first?.value, minor - hi < (hi - lo) * 0.6 { hi = max(hi, minor) }
         let pad = (hi - lo) * 0.08

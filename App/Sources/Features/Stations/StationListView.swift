@@ -1,6 +1,7 @@
 import SwiftUI
 import TideKit
 
+@MainActor
 struct StationListView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(AppSettings.self) private var settings

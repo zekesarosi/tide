@@ -81,9 +81,9 @@ private struct KeyEditor: View {
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
             HStack {
-                Button("Save") { save(draft) }.disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("Save") { save(draft) }.buttonStyle(.borderless).disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
                 Spacer()
-                if isSet { Button("Remove", role: .destructive) { save(nil) } }
+                if isSet { Button("Remove", role: .destructive) { save(nil) }.buttonStyle(.borderless) }
             }
             if let status { Text(status).font(.caption).foregroundStyle(.secondary) }
         } header: {
@@ -133,6 +133,7 @@ struct DataSourcesView: View {
                         Link("Website", destination: info.homepage)
                         Link("Terms", destination: info.termsURL)
                     }
+                    .buttonStyle(.borderless)
                     .font(.caption)
                 }
                 .padding(.vertical, 4)
