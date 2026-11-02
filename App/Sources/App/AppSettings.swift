@@ -17,7 +17,9 @@ final class AppSettings {
 
     /// Datums offered for NOAA stations.
     static let selectableDatums: [TidalDatum] = [.mllw, .mlw, .msl, .mhw, .mhhw, .navd88]
-    static let horizons = [48, 72, 120, 168]
+    static let horizons = [48, 120, 168, 720, 2_160]
+    /// Three months: the tide outlook runs well past the ~16-day weather forecast.
+    static let defaultHorizon = 2_160
 
     private typealias Keys = SharedSettingsKeys
 
@@ -27,7 +29,7 @@ final class AppSettings {
         unit = defaults.string(forKey: Keys.unit).flatMap(LengthUnit.init(rawValue:)) ?? defaultUnit
         datum = defaults.string(forKey: Keys.datum).flatMap(TidalDatum.init(rawValue:)) ?? .mllw
         let h = defaults.integer(forKey: Keys.horizon)
-        horizonHours = Self.horizons.contains(h) ? h : 120
+        horizonHours = Self.horizons.contains(h) ? h : Self.defaultHorizon
         blendOfficialGuidance = defaults.object(forKey: Keys.blend) as? Bool ?? true
         favoriteIDs = defaults.stringArray(forKey: Keys.favorites) ?? []
     }

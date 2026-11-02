@@ -1,8 +1,8 @@
 import SwiftUI
 import TideKit
 
-/// A station: the reading now, what the water will do next, and whether it
-/// will flood, with method and sources one tap away.
+/// A station: the reading now and what the water will do next, with method
+/// and sources one tap away.
 @MainActor
 struct StationDetailView: View {
     @Environment(AppEnvironment.self) private var env
@@ -102,7 +102,7 @@ struct StationDetailView: View {
 
     @ViewBuilder
     private func content(_ f: WaterLevelForecast) -> some View {
-        if !f.nearbyStorms.isEmpty || !f.alerts.isEmpty || model.floodRiskEvent != nil {
+        if !f.nearbyStorms.isEmpty || !f.alerts.isEmpty {
             callouts(f)
                 .padding(.horizontal, Theme.margin)
                 .padding(.top, 14)
@@ -121,15 +121,22 @@ struct StationDetailView: View {
             NavigationLink {
                 AllTidesView(forecast: f, unit: unit, tz: tz)
             } label: {
-                Text("All tides this week").frame(minHeight: 44)
+                Text("All tides").frame(minHeight: 44)
             }
         }
         .padding(.horizontal, Theme.margin)
         .padding(.top, Theme.sectionGap)
 
         VStack(alignment: .leading, spacing: 12) {
-            SectionLabel("Flood outlook · \(Int((f.horizon.timeIntervalSince(f.issued) / 86_400).rounded())) days")
-            FloodOutlookSection(forecast: f, peak: model.peakEvent, unit: unit, tz: tz)
+            SectionLabel("Tide calendar")
+            TideCalendarView(forecast: f, unit: unit, tz: tz)
+        }
+        .padding(.horizontal, Theme.margin)
+        .padding(.top, Theme.sectionGap)
+
+        VStack(alignment: .leading, spacing: 12) {
+            SectionLabel("Highest water · \(Int((f.horizon.timeIntervalSince(f.issued) / 86_400).rounded())) days")
+            HighestWaterSection(forecast: f, peak: model.peakEvent, unit: unit, tz: tz)
         }
         .padding(.horizontal, Theme.margin)
         .padding(.top, 18)
@@ -179,22 +186,11 @@ struct StationDetailView: View {
                 RiskCallout(title: "\(s.classification) \(s.name) nearby",
                             message: "Statistical surge forecasts are unreliable in tropical cyclones. Follow NHC and local NWS forecasts.",
                             systemImage: "hurricane",
-                            tint: FloodCategory.moderate.tint, wash: FloodCategory.moderate.wash)
+                            tint: Theme.alert, wash: Theme.alertWash)
             }
             ForEach(f.alerts) { a in
                 RiskCallout(title: a.event, message: a.headline, systemImage: "exclamationmark.triangle.fill",
-                            tint: FloodCategory.moderate.tint, wash: FloodCategory.moderate.wash)
-            }
-            if let e = model.floodRiskEvent, let minor = f.thresholds?.minor {
-                let p = e.exceedance[.minor] ?? 0
-                let over = e.total - minor
-                let likely = e.category > .none || p >= 0.5
-                let what = e.category > .none ? e.category.label : "Minor flooding"
-                RiskCallout(
-                    title: "\(likely ? what + " likely" : "Possible minor flooding") at \(Fmt.smartTime(e.date, in: tz, relativeTo: f.issued))",
-                    message: "Forecast \(Fmt.length(e.total, unit)) at high tide, \(Fmt.length(abs(over), unit)) \(over >= 0 ? "over" : "under") the minor flood level. \(Fmt.percent(p)) chance.",
-                    tint: e.category > .none ? e.category.tint : Theme.calloutText,
-                    wash: e.category > .none ? e.category.wash : Theme.swellWash)
+                            tint: Theme.alert, wash: Theme.alertWash)
             }
         }
     }
@@ -229,13 +225,8 @@ struct StationDetailView: View {
                         .font(.footnote).foregroundStyle(Theme.inkSecondary)
                 }
             }
-            HStack(spacing: 8) {
-                if let a = model.anomalyNow {
-                    Chip(text: Phrase.anomaly(a, unit), style: a >= 0.03 ? .swell : (a <= -0.03 ? .harbor : .neutral))
-                }
-                if f.thresholds?.minor != nil && model.floodRiskEvent == nil {
-                    Chip(text: "No flooding expected")
-                }
+            if let a = model.anomalyNow {
+                Chip(text: Phrase.anomaly(a, unit), style: a >= 0.03 ? .swell : (a <= -0.03 ? .harbor : .neutral))
             }
         }
     }

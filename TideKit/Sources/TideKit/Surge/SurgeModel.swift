@@ -216,6 +216,18 @@ public struct SurgeModel: Sendable, Hashable, Codable {
         }
     }
 
+    /// Lead time up to which the weather forecast is taken at face value.
+    public static let weatherSkillfulHours = 48.0
+    /// e-folding time of weather-forecast skill after that.
+    public static let weatherSkillDecayHours = 120.0
+
+    /// How much of the forecast pressure/wind response to trust at `lead`
+    /// hours: 1 for two days, then exponential decay (≈0.55 at 5 days,
+    /// ≈0.28 at 8, ≈0.07 at 15).
+    public static func weatherSkill(atLead lead: Double) -> Double {
+        exp(-max(0, lead - weatherSkillfulHours) / weatherSkillDecayHours)
+    }
+
     /// Empirical RMS error at `lead` hours (linear interpolation, flat beyond).
     public func errorSigma(atLead lead: Double) -> Double {
         guard let first = leadErrors.first else { return 0.1 }
@@ -231,6 +243,12 @@ public struct SurgeModel: Sendable, Hashable, Codable {
     ///
     /// - Parameter forcingSaturationHours: forcing-forecast error is assumed
     ///   to grow linearly to the size of the meteorological signal itself.
+    ///
+    /// Weather forecasts lose skill with lead time, so past
+    /// `weatherSkillfulHours` the pressure and wind response is shrunk by
+    /// `weatherSkill(atLead:)` and the part no longer trusted is carried as
+    /// extra uncertainty instead: a big wind event forecast 9 days out widens
+    /// the band rather than moving the mean by its full size.
     public func forecast(forcing: [MetSample], recentResiduals: TimeSeries, issueTime: Date, horizonHours: Int,
                          tide: TideCovariates? = nil, forcingSaturationHours: Double = 120,
                          sigmaInflation: Double = 1) -> [Prediction] {
@@ -253,11 +271,16 @@ public struct SurgeModel: Sendable, Hashable, Codable {
             let k = max(m.date.timeIntervalSince(anchor) / 3_600, 0)
             let persistence = w * e0 * pow(phi, k) + (1 - w) * ((recentResidual ?? 0) - m.total)
             let modelSigma = recent.isEmpty ? (leadErrors.last?.rms ?? 0.15) : errorSigma(atLead: k)
-            let leadFrac = min(m.date.timeIntervalSince(issueTime) / 3_600 / forcingSaturationHours, 1)
+            let leadHours = m.date.timeIntervalSince(issueTime) / 3_600
+            let leadFrac = min(leadHours / forcingSaturationHours, 1)
+            let skill = Self.weatherSkill(atLead: leadHours)
+            let weather = m.pressure + m.wind
+            let distrusted = (1 - skill) * abs(weather)
             let forcingSigma = signalSigma * leadFrac
-            let sigma = (modelSigma * modelSigma + forcingSigma * forcingSigma).squareRoot() * sigmaInflation
-            return Prediction(date: m.date, mean: m.total + persistence, sigma: max(sigma, 0.02),
-                              pressureComponent: m.pressure, windComponent: m.wind, tideInteractionComponent: m.tide,
+            let sigma = (modelSigma * modelSigma + forcingSigma * forcingSigma + distrusted * distrusted).squareRoot() * sigmaInflation
+            let mean = m.offset + m.tide + skill * weather + persistence
+            return Prediction(date: m.date, mean: mean, sigma: max(sigma, 0.02),
+                              pressureComponent: skill * m.pressure, windComponent: skill * m.wind, tideInteractionComponent: m.tide,
                               offsetComponent: m.offset, persistenceComponent: persistence)
         }
     }

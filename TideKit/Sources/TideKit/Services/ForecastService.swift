@@ -6,7 +6,7 @@ public struct ForecastOptions: Sendable, Hashable, Codable {
     public var horizonHours: Int
     public var blendOfficialGuidance: Bool
 
-    public init(datum: TidalDatum = .mllw, horizonHours: Int = 120, blendOfficialGuidance: Bool = true) {
+    public init(datum: TidalDatum = .mllw, horizonHours: Int = 2_160, blendOfficialGuidance: Bool = true) {
         self.datum = datum
         self.horizonHours = horizonHours
         self.blendOfficialGuidance = blendOfficialGuidance

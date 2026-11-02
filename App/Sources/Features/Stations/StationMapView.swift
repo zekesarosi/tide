@@ -46,7 +46,7 @@ struct StationMapView: View {
                 .buttonStyle(.plain)
             }
         }
-        .navigationDestination(for: Station.self) { StationDetailView(station: $0) }
+        .navigationDestination(for: Station.self) { StationDetailView(station: $0).id($0.id) }
     }
 
     private func tint(for s: Station) -> Color {

@@ -151,6 +151,9 @@ public struct WaterLevelForecast: Sendable, Hashable {
     public var nearbyStorms: [TropicalCyclone]
     public var notes: [String]
     public var method: Method
+    /// End of the weather-driven surge forecast; after it the forecast is the
+    /// long-range outlook (tide table + typical surge). Nil if there is none.
+    public var weatherHorizon: Date? = nil
 
     public enum Method: String, Sendable, Hashable {
         /// Calibrated regression + AR(1) persistence (+ official blend).
@@ -263,7 +266,7 @@ public enum TotalWaterLevelForecaster {
 
         // Blend.
         let rho = 0.5
-        let surge: [SurgeForecastPoint] = modelPreds.map { m in
+        var surge: [SurgeForecastPoint] = modelPreds.map { m in
             var point = SurgeForecastPoint(date: m.date, surge: m.mean, sigma: m.sigma, pressureComponent: m.pressureComponent,
                                            windComponent: m.windComponent, tideInteractionComponent: m.tideInteractionComponent,
                                            offsetComponent: m.offsetComponent,
@@ -278,6 +281,17 @@ public enum TotalWaterLevelForecaster {
                 point.officialWeight = b
             }
             return point
+        }
+
+        // Long-range outlook: past the end of the weather forecast, relax the
+        // surge toward this station's typical residual over the last 30 days
+        // and widen the band to its spread, so the tide outlook can run for
+        // months.
+        let weatherHorizon = surge.last?.date
+        surge += outlook(after: surge.last, until: horizon, now: now,
+                         residuals: residuals.sliced(from: now - Double(trainingDays) * 86_400, to: now))
+        if let w = weatherHorizon, w < horizon - 86_400 {
+            notes.append("Beyond \(Int((w.timeIntervalSince(now) / 86_400).rounded())) days the weather forecast ends: the outlook is the tide table plus this station's typical surge, with its usual range.")
         }
 
         // Display curves.
@@ -326,7 +340,38 @@ public enum TotalWaterLevelForecaster {
             observedResidual: displayResidual, surge: surge,
             total: TimeSeries(points: total), totalLower: TimeSeries(points: lower), totalUpper: TimeSeries(points: upper),
             officialTotal: officialTotal, events: events, thresholds: input.thresholds, model: model.diagnostics,
-            alerts: input.alerts.filter(\.isCoastal), nearbyStorms: nearby, notes: notes, method: method)
+            alerts: input.alerts.filter(\.isCoastal), nearbyStorms: nearby, notes: notes, method: method,
+            weatherHorizon: weatherHorizon)
+    }
+
+    /// e-folding time for the forecast surge to relax to its typical value.
+    static let outlookRelaxationHours = 48.0
+
+    /// Hourly surge points from `last` to `horizon` that relax from the last
+    /// weather-driven value to the median of `residuals` (robust to a storm in
+    /// the window), with σ settling to their spread about it: once the
+    /// weather forecast is over, today's weather tells us nothing, so the
+    /// uncertainty is the station's usual surge variability, wider or
+    /// narrower than at the last forecast hour.
+    static func outlook(after last: SurgeForecastPoint?, until horizon: Date, now: Date,
+                        residuals: TimeSeries) -> [SurgeForecastPoint] {
+        let values = residuals.values
+        let climMean = values.count >= 24 ? Stats.median(values) : 0
+        let climSigma = values.count >= 24 ? Swift.max(Stats.rms(values.map { $0 - climMean }), 0.05) : 0.15
+        let start = last?.date ?? Date(timeIntervalSince1970: (now.timeIntervalSince1970 / 3_600).rounded(.down) * 3_600)
+        let s0 = last?.surge ?? climMean, sd0 = last?.sigma ?? climSigma
+        var out: [SurgeForecastPoint] = []
+        var t = start + 3_600
+        while t <= horizon {
+            let d = exp(-t.timeIntervalSince(start) / 3_600 / outlookRelaxationHours)
+            let mean = climMean + (s0 - climMean) * d
+            let sigma = (sd0 * sd0 * d * d + climSigma * climSigma * (1 - d * d)).squareRoot()
+            out.append(SurgeForecastPoint(date: t, surge: mean, sigma: sigma, pressureComponent: 0, windComponent: 0,
+                                          tideInteractionComponent: 0, offsetComponent: mean, persistenceComponent: 0,
+                                          officialSurge: nil, officialWeight: 0))
+            t += 3_600
+        }
+        return out
     }
 
     // MARK: - Helpers

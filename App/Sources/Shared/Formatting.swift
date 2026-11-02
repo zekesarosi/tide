@@ -51,18 +51,3 @@ enum Fmt {
         return points[Int((degrees / 22.5).rounded()) % 16]
     }
 }
-
-extension FloodCategory {
-    /// Category color from the Slack Water palette (see Theme).
-    var color: Color { tint }
-
-    var shortLabel: String {
-        switch self {
-        case .none: return "Normal"
-        case .action: return "Action"
-        case .minor: return "Minor"
-        case .moderate: return "Moderate"
-        case .major: return "Major"
-        }
-    }
-}

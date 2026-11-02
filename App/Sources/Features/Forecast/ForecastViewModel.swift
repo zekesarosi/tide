@@ -59,11 +59,6 @@ final class ForecastViewModel {
     /// The highest forecast water level event over the horizon.
     var peakEvent: ForecastEvent? { forecast?.events.filter { $0.kind == .high }.max { $0.total < $1.total } }
 
-    /// Event with the greatest chance of reaching minor flooding.
-    var riskiestEvent: ForecastEvent? {
-        forecast?.events.filter { $0.kind == .high }.max { ($0.exceedance[.minor] ?? 0) < ($1.exceedance[.minor] ?? 0) }
-    }
-
     /// The water level to headline: a recent observation, else the forecast now.
     var reading: (value: Double, observed: Bool, date: Date)? {
         guard let f = forecast else { return nil }
@@ -74,14 +69,6 @@ final class ForecastViewModel {
 
     /// Water above (+) or below (−) the tide table right now.
     var anomalyNow: Double? { forecast?.currentResidual?.value ?? forecast?.surge.first?.surge }
-
-    /// The first high tide that warrants a callout (≥ 10 % chance of minor
-    /// flooding, or a forecast category at action stage or above).
-    var floodRiskEvent: ForecastEvent? {
-        forecast?.events.first { e in
-            e.kind == .high && (e.category > .none || (e.exceedance[.minor] ?? 0) >= 0.1)
-        }
-    }
 
     /// Surge components for the hour closest to now.
     var componentsNow: SurgeForecastPoint? { forecast?.surge.first }

@@ -37,7 +37,7 @@ struct SettingsView: View {
             } footer: {
                 if !env.isContactConfigured {
                     Text("⚠︎ Developer contact is not configured (TIDE_CONTACT in Config/App.xcconfig). The National Weather Service requires an identifying User-Agent and may reject requests.")
-                        .foregroundStyle(FloodCategory.minor.tint)
+                        .foregroundStyle(Theme.warning)
                 }
             }
             Section("About") {
