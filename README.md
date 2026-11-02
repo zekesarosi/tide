@@ -69,10 +69,11 @@ TideKit/                 Swift package: all forecasting logic (no UI), runs on i
   Tests/TideKitTests/    39 tests incl. validation against NOAA fixtures
 App/                     SwiftUI iPhone app
 Widgets/                 WidgetKit extension (home + lock screen), App Intents station picker
-Shared/                  App Group helpers compiled into both the app and the widget
+Shared/                  App Group helpers + Slack Water theme, compiled into both app and widget
 Config/                  xcconfig (identity, keys) — Secrets.xcconfig is git-ignored
 project.yml              XcodeGen spec (generates TideForecast.xcodeproj)
 docs/ARCHITECTURE.md     Data sources, auth, and the forecasting method in detail
+docs/DESIGN.md           Slack Water design system (tokens, type, components)
 ```
 
 ## Getting started

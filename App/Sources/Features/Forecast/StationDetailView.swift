@@ -1,6 +1,8 @@
 import SwiftUI
 import TideKit
 
+/// A station: the reading now, what the water will do next, and whether it
+/// will flood, with method and sources one tap away.
 @MainActor
 struct StationDetailView: View {
     @Environment(AppEnvironment.self) private var env
@@ -13,44 +15,51 @@ struct StationDetailView: View {
 
     private var station: Station { model.station }
     private var tz: TimeZone { station.timeZone }
+    private var unit: LengthUnit { settings.unit }
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 0) {
+                header
                 if let f = model.forecast {
                     content(f)
                 } else if case .failed(let message) = model.phase {
                     ContentUnavailableView {
-                        Label("Forecast unavailable", systemImage: "exclamationmark.triangle")
+                        Label("Forecast unavailable", systemImage: "wifi.exclamationmark")
                     } description: {
                         Text(message)
                     } actions: {
-                        Button("Retry") { Task { await reload() } }
+                        Button("Try again") { Task { await reload() } }
+                            .buttonStyle(.bordered)
                     }
-                    .padding(.top, 60)
+                    .padding(.top, 40)
                 } else {
-                    ProgressView("Building forecast…\nTide · observations · weather · official guidance")
-                        .multilineTextAlignment(.center)
-                        .padding(.top, 80)
+                    LoadingHero()
                 }
             }
-            .padding(.horizontal)
-            .padding(.bottom, 24)
+            .padding(.bottom, 32)
         }
-        .background(Color(.systemGroupedBackground))
+        .background(Theme.surface)
         .navigationTitle(station.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    settings.toggleFavorite(station)
-                } label: {
-                    Image(systemName: settings.isFavorite(station) ? "star.fill" : "star")
-                }
-                .accessibilityLabel(settings.isFavorite(station) ? "Remove favorite" : "Add favorite")
+            ToolbarItem(placement: .principal) {
+                // The caps header below names the station; keep the bar quiet.
+                Text(station.name).font(.subheadline.weight(.semibold)).opacity(0)
+                    .accessibilityHidden(true)
             }
-            ToolbarItem(placement: .topBarLeading) {
-                if model.phase == .loading && model.forecast != nil { ProgressView().controlSize(.small) }
+            ToolbarItem(placement: .topBarTrailing) {
+                HStack(spacing: 4) {
+                    if model.phase == .loading && model.forecast != nil {
+                        ProgressView().controlSize(.small)
+                    }
+                    Button {
+                        settings.toggleFavorite(station)
+                    } label: {
+                        Image(systemName: settings.isFavorite(station) ? "star.fill" : "star")
+                    }
+                    .accessibilityLabel(settings.isFavorite(station) ? "Remove from favorites" : "Add to favorites")
+                }
             }
         }
         .refreshable { await reload() }
@@ -64,177 +73,218 @@ struct StationDetailView: View {
         await model.load(service: env.service, options: settings.forecastOptions)
     }
 
+    // MARK: Header
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(station.name.uppercased())
+                .font(.caption.weight(.semibold))
+                .tracking(1.4)
+                .foregroundStyle(Theme.inkSecondary)
+            Text(subtitle)
+                .font(.footnote)
+                .foregroundStyle(Theme.inkSecondary)
+        }
+        .padding(.horizontal, Theme.margin)
+        .padding(.top, 4)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var subtitle: String {
+        var parts: [String] = []
+        if let r = station.region, !r.isEmpty { parts.append(r) }
+        if station.source == .noaaCoops { parts.append("NOAA \(station.code)") } else { parts.append(DataSourceInfo.info(station.source).agency) }
+        if let f = model.forecast { parts.append("Updated \(Fmt.time(f.issued, in: tz))") }
+        return parts.joined(separator: " · ")
+    }
+
+    // MARK: Content
+
     @ViewBuilder
     private func content(_ f: WaterLevelForecast) -> some View {
-        if !f.alerts.isEmpty || !f.nearbyStorms.isEmpty {
-            AlertsCard(alerts: f.alerts, storms: f.nearbyStorms, tz: tz)
+        callouts(f)
+            .padding(.horizontal, Theme.margin)
+            .padding(.top, 14)
+
+        hero(f)
+            .padding(.horizontal, Theme.margin)
+            .padding(.top, 18)
+
+        TideLineChart(forecast: f, unit: unit, tz: tz)
+            .padding(.top, 14)
+
+        VStack(alignment: .leading, spacing: 12) {
+            SectionLabel("Next tides")
+            NextTidesGrid(events: f.events, unit: unit, tz: tz, now: f.issued)
+            NavigationLink {
+                AllTidesView(forecast: f, unit: unit, tz: tz)
+            } label: {
+                Text("All tides this week").frame(minHeight: 44)
+            }
         }
-        NowCard(model: model, forecast: f, unit: settings.unit, tz: tz)
-        FloodOutlookCard(forecast: f, peak: model.peakEvent, riskiest: model.riskiestEvent, unit: settings.unit, tz: tz)
-        Card(title: "Water level", subtitle: "\(f.datum.displayName) (\(f.datum.rawValue))") {
-            TideChartView(forecast: f, unit: settings.unit, tz: tz)
+        .padding(.horizontal, Theme.margin)
+        .padding(.top, Theme.sectionGap)
+
+        VStack(alignment: .leading, spacing: 12) {
+            SectionLabel("Flood outlook · \(Int((f.horizon.timeIntervalSince(f.issued) / 86_400).rounded())) days")
+            FloodOutlookSection(forecast: f, peak: model.peakEvent, unit: unit, tz: tz)
         }
-        Card(title: "Storm surge", subtitle: "Non-tidal water level: observed and forecast") {
-            SurgeChartView(forecast: f, unit: settings.unit, tz: tz)
-            SurgeBreakdownView(forecast: f, unit: settings.unit, tz: tz)
+        .padding(.horizontal, Theme.margin)
+        .padding(.top, 18)
+
+        if let point = model.componentsNow {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionLabel(point.surge >= 0 ? "Why the water is high" : "Why the water is low")
+                if let sentence = model.driverSentence {
+                    Text(sentence).font(.subheadline).foregroundStyle(Theme.ink)
+                }
+                DriverBars(point: point, unit: unit)
+            }
+            .padding(.horizontal, Theme.margin)
+            .padding(.top, Theme.sectionGap)
         }
-        Card(title: "Upcoming tides", subtitle: "Total = predicted tide + forecast surge, with 80% range") {
-            EventsListView(events: f.events, unit: settings.unit, tz: tz, hasThresholds: f.thresholds != nil)
+
+        VStack(alignment: .leading, spacing: 8) {
+            SectionLabel("Confidence")
+            Text(confidenceText(f)).font(.subheadline)
+            if let result = model.result {
+                NavigationLink {
+                    ForecastDetailsView(result: result, unit: unit, tz: tz)
+                } label: {
+                    Text("How this forecast works").frame(minHeight: 44)
+                }
+            }
         }
-        Card(title: "Model & skill") {
-            ModelDiagnosticsView(forecast: f, unit: settings.unit)
+        .padding(.horizontal, Theme.margin)
+        .padding(.top, Theme.sectionGap)
+
+        VStack(alignment: .leading, spacing: 4) {
+            Text(sourceLine)
+            Text("Guidance only. Not for navigation.")
         }
-        Card(title: "Data sources") {
-            SourcesView(result: model.result, notes: f.notes)
-        }
-        Text("Forecasts are guidance only and not for navigation. Always follow official NWS / national agency warnings.")
-            .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        .font(.caption)
+        .foregroundStyle(Theme.inkSecondary)
+        .padding(.horizontal, Theme.margin)
+        .padding(.top, 24)
     }
-}
 
-// MARK: - Cards
+    // MARK: Pieces
 
-struct Card<Content: View>: View {
-    var title: String
-    var subtitle: String?
-    @ViewBuilder var content: Content
+    @ViewBuilder
+    private func callouts(_ f: WaterLevelForecast) -> some View {
+        VStack(spacing: 10) {
+            ForEach(f.nearbyStorms) { s in
+                RiskCallout(title: "\(s.classification) \(s.name) nearby",
+                            message: "Statistical surge forecasts are unreliable in tropical cyclones. Follow NHC and local NWS forecasts.",
+                            systemImage: "hurricane",
+                            tint: FloodCategory.moderate.tint, wash: FloodCategory.moderate.wash)
+            }
+            ForEach(f.alerts) { a in
+                RiskCallout(title: a.event, message: a.headline, systemImage: "exclamationmark.triangle.fill",
+                            tint: FloodCategory.moderate.tint, wash: FloodCategory.moderate.wash)
+            }
+            if let e = model.floodRiskEvent, let minor = f.thresholds?.minor {
+                let p = e.exceedance[.minor] ?? 0
+                let over = e.total - minor
+                let likely = e.category > .none || p >= 0.5
+                let what = e.category > .none ? e.category.label : "Minor flooding"
+                RiskCallout(
+                    title: "\(likely ? what + " likely" : "Possible minor flooding") at \(Fmt.smartTime(e.date, in: tz, relativeTo: f.issued))",
+                    message: "Forecast \(Fmt.length(e.total, unit)) at high tide, \(Fmt.length(abs(over), unit)) \(over >= 0 ? "over" : "under") the minor flood level. \(Fmt.percent(p)) chance.",
+                    tint: e.category > .none ? e.category.tint : Theme.calloutText,
+                    wash: e.category > .none ? e.category.wash : Theme.swellWash)
+            }
+        }
+    }
 
-    var body: some View {
+    @ViewBuilder
+    private func hero(_ f: WaterLevelForecast) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.headline)
-                if let subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
-            }
-            content
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
-    }
-}
+            if let r = model.reading {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(number(r.value))
+                        .font(.reading(76))
+                        .tracking(-1)
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                        .minimumScaleFactor(0.6)
+                    Text(unit.symbol).font(.title2.weight(.light)).foregroundStyle(Theme.inkSecondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(Fmt.length(r.value, unit)) \(r.observed ? "observed" : "predicted")")
 
-struct NowCard: View {
-    let model: ForecastViewModel
-    let forecast: WaterLevelForecast
-    let unit: LengthUnit
-    let tz: TimeZone
-
-    var body: some View {
-        Card(title: "Now") {
-            HStack(alignment: .firstTextBaseline) {
-                if let obs = forecast.latestObservation, forecast.issued.timeIntervalSince(obs.date) < 3 * 3_600 {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(Fmt.length(obs.value, unit)).font(.system(size: 40, weight: .semibold, design: .rounded))
-                        Text("Observed \(Fmt.time(obs.date, in: tz))").font(.caption).foregroundStyle(.secondary)
-                    }
-                } else if let a = forecast.astronomical.value(at: forecast.issued) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(Fmt.length(a, unit)).font(.system(size: 40, weight: .semibold, design: .rounded))
-                        Text("Predicted (no live observations)").font(.caption).foregroundStyle(.secondary)
+                if let next = f.events.first {
+                    HStack(spacing: 8) {
+                        if let rising = model.trendRising { TrendArrow(rising: rising) }
+                        (Text("\(model.trendRising == true ? "Rising" : "Falling") · \(Phrase.eventName(next.kind).lowercased()) ")
+                            + Text(Fmt.length(next.total, unit)).fontWeight(.semibold)
+                            + Text(" at \(Fmt.smartTime(next.date, in: tz, relativeTo: f.issued))"))
+                            .font(.callout)
                     }
                 }
-                if let rising = model.trendRising {
-                    Image(systemName: rising ? "arrow.up.right" : "arrow.down.right")
-                        .font(.title2).foregroundStyle(rising ? .blue : .teal)
-                        .accessibilityLabel(rising ? "Rising" : "Falling")
-                }
-                Spacer()
-                if let r = forecast.currentResidual {
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(Fmt.length(r.value, unit, signed: true)).font(.title3.weight(.semibold))
-                            .foregroundStyle(abs(r.value) > 0.3 ? Color.orange : Color.primary)
-                        Text("vs. predicted").font(.caption).foregroundStyle(.secondary)
-                    }
+                if !r.observed {
+                    Text("Predicted: no live observations at this station.")
+                        .font(.footnote).foregroundStyle(Theme.inkSecondary)
                 }
             }
-            Divider()
-            HStack {
-                ForEach(model.nextEvents) { e in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(e.kind == .high ? "Next high" : "Next low").font(.caption).foregroundStyle(.secondary)
-                        Text(Fmt.time(e.date, in: tz)).font(.subheadline.weight(.semibold))
-                        Text(Fmt.length(e.total, unit)).font(.subheadline)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 8) {
+                if let a = model.anomalyNow {
+                    Chip(text: Phrase.anomaly(a, unit), style: a >= 0.03 ? .swell : (a <= -0.03 ? .harbor : .neutral))
+                }
+                if f.thresholds?.minor != nil && model.floodRiskEvent == nil {
+                    Chip(text: "No flooding expected")
                 }
             }
         }
     }
-}
 
-struct FloodOutlookCard: View {
-    let forecast: WaterLevelForecast
-    let peak: ForecastEvent?
-    let riskiest: ForecastEvent?
-    let unit: LengthUnit
-    let tz: TimeZone
+    private func number(_ meters: Double) -> String {
+        String(format: unit == .feet ? "%.1f" : "%.2f", unit.fromMeters(meters))
+    }
 
-    var body: some View {
-        Card(title: "Flood outlook", subtitle: "Next \(Int(forecast.horizon.timeIntervalSince(forecast.issued) / 3_600)) hours") {
-            if let th = forecast.thresholds, let minor = th.minor {
-                let p = forecast.maxMinorFloodProbability
-                let category = forecast.peakCategory
-                HStack(spacing: 12) {
-                    Circle().fill(category.color).frame(width: 14, height: 14)
-                    VStack(alignment: .leading) {
-                        Text(category == .none ? (p >= 0.1 ? "Possible minor flooding" : "No flooding expected") : category.label)
-                            .font(.title3.weight(.semibold))
-                        if let r = riskiest, p >= 0.01 {
-                            Text("\(Fmt.percent(p)) chance of minor flooding at the \(Fmt.dayTime(r.date, in: tz)) high tide")
-                                .font(.subheadline).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                if let peak {
-                    let margin = minor - peak.total
-                    Text("Highest water: \(Fmt.length(peak.total, unit)) \(Fmt.dayTime(peak.date, in: tz)) — \(Fmt.length(abs(margin), unit)) \(margin >= 0 ? "below" : "above") minor flood stage (\(th.authority)).")
-                        .font(.footnote)
-                }
-            } else {
-                if let peak {
-                    Text("Highest water: \(Fmt.length(peak.total, unit)) \(Fmt.dayTime(peak.date, in: tz))").font(.subheadline)
-                }
-                Text("No official flood thresholds are published for this station.").font(.footnote).foregroundStyle(.secondary)
+    private func confidenceText(_ f: WaterLevelForecast) -> String {
+        if let rms = f.model.hindcast24hRMS {
+            return "In recent tests this station's forecast was within ±\(Fmt.length(rms * 1.2816, unit)) a day ahead, 8 times in 10."
+        }
+        switch f.method {
+        case .calibrated: return "Not enough recent data to measure this station's accuracy yet."
+        case .uncalibrated: return "No recent observations here, so this forecast is less certain than usual."
+        case .persistenceOnly: return "Weather data is unavailable, so the forecast carries today's level forward."
+        }
+    }
+
+    private var sourceLine: String {
+        guard let r = model.result else { return DataSourceInfo.info(station.source).agency }
+        let names = Set(r.sources.filter(\.ok).map(\.source)).map { id -> String in
+            switch id {
+            case .noaaCoops: return "NOAA"
+            case .nwsAlerts, .nwps, .nhc: return "NWS"
+            case .openMeteo: return "Open-Meteo"
+            case .dfoIWLS: return "Fisheries and Oceans Canada"
+            case .ukAdmiralty: return "UK Hydrographic Office"
             }
         }
+        return Array(Set(names)).sorted().joined(separator: " · ")
     }
 }
 
-struct AlertsCard: View {
-    let alerts: [WeatherAlert]
-    let storms: [TropicalCyclone]
-    let tz: TimeZone
-    @State private var expanded: String?
-
+/// Quiet placeholder while the first forecast builds.
+private struct LoadingHero: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(storms) { s in
-                HStack(alignment: .top) {
-                    Image(systemName: "hurricane").foregroundStyle(.white)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("\(s.classification) \(s.name) nearby").font(.headline).foregroundStyle(.white)
-                        Text("Statistical surge guidance is unreliable in tropical cyclones. Follow NHC and local NWS products.")
-                            .font(.footnote).foregroundStyle(.white.opacity(0.9))
-                        if let url = s.advisoryURL { Link("NHC advisory", destination: url).font(.footnote.bold()).foregroundStyle(.white) }
-                    }
-                }
-            }
-            ForEach(alerts) { a in
-                VStack(alignment: .leading, spacing: 4) {
-                    Label(a.event, systemImage: "exclamationmark.triangle.fill").font(.headline).foregroundStyle(.white)
-                    if let h = a.headline { Text(h).font(.footnote).foregroundStyle(.white.opacity(0.9)) }
-                    if expanded == a.id {
-                        if let d = a.description { Text(d).font(.footnote).foregroundStyle(.white) }
-                        if let i = a.instruction { Text(i).font(.footnote.bold()).foregroundStyle(.white) }
-                    }
-                    Button(expanded == a.id ? "Less" : "Details") { expanded = expanded == a.id ? nil : a.id }
-                        .font(.footnote.bold()).foregroundStyle(.white)
-                }
+        VStack(alignment: .leading, spacing: 14) {
+            RoundedRectangle(cornerRadius: 8).fill(Theme.neutralWash).frame(width: 120, height: 64)
+            RoundedRectangle(cornerRadius: 6).fill(Theme.neutralWash).frame(width: 220, height: 16)
+            RoundedRectangle(cornerRadius: 12).fill(Theme.neutralWash).frame(height: 200)
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Reading the tide, the weather and the latest observations…")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.inkSecondary)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(LinearGradient(colors: [.red, .orange], startPoint: .topLeading, endPoint: .bottomTrailing),
-                    in: RoundedRectangle(cornerRadius: 16))
+        .padding(.horizontal, Theme.margin)
+        .padding(.top, 24)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Loading forecast")
     }
 }

@@ -18,6 +18,8 @@ struct StationMapView: View {
             }
             UserAnnotation()
         }
+        // A quiet basemap so the stations read first.
+        .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll, showsTraffic: false))
         .mapControls {
             MapUserLocationButton()
             MapCompass()
@@ -37,7 +39,7 @@ struct StationMapView: View {
                         Image(systemName: "chevron.right")
                     }
                     .padding()
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
                     .padding(.horizontal)
                     .padding(.bottom, 8)
                 }
@@ -49,10 +51,9 @@ struct StationMapView: View {
 
     private func tint(for s: Station) -> Color {
         switch s.source {
-        case .noaaCoops: return s.isTidal ? .blue : .teal
-        case .dfoIWLS: return .red
-        case .ukAdmiralty: return .indigo
-        default: return .gray
+        case .noaaCoops: return s.isTidal ? Theme.harbor : Theme.tideTable
+        case .dfoIWLS, .ukAdmiralty: return Theme.ink.opacity(0.7)
+        default: return Theme.tideTable
         }
     }
 }
