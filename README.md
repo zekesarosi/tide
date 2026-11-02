@@ -59,6 +59,7 @@ TideKit/                 Swift package: all forecasting logic (no UI), runs on i
     Networking/          API client (auth, retries, pacing, caching), credential stores
     Services/            ForecastService: parallel fetch + graceful degradation
   Sources/tide-cli/      Command-line harness that runs the live pipeline
+  Sources/tide-analyze/  Retrospective analysis of a past week (hindcasts, attribution)
   Tests/TideKitTests/    34 tests incl. validation against NOAA fixtures
 App/                     SwiftUI iPhone app
 Config/                  xcconfig (identity, keys) — Secrets.xcconfig is git-ignored
@@ -90,6 +91,9 @@ swift test
 TIDE_CONTACT=you@example.com swift run tide-cli 8518750          # The Battery, NY
 TIDE_CONTACT=you@example.com swift run tide-cli "Point Atkinson"  # DFO Canada
 TIDE_CONTACT=you@example.com swift run tide-cli 9063020 IGLD 72   # Buffalo, Lake Erie
+
+# Retrospective analysis: observed vs predicted, surge attribution, replayed forecasts
+TIDE_CONTACT=you@example.com swift run tide-analyze 2026-10-26T07:00:00Z 2026-11-02T08:00:00Z sfbay.json 9414290 9414750
 ```
 
 ## Data sources and authentication
