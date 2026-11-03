@@ -35,6 +35,24 @@ final class SnapshotTests: XCTestCase {
         XCTAssertTrue(pts.contains { $0.total != nil && $0.lower != nil && $0.upper != nil })
     }
 
+    func testLevelIsAnchoredToTheLatestObservation() throws {
+        var base = ForecastSnapshot.sample(now: now)
+        base.latestObservation = nil   // forecast only
+        var s = base
+        let fcNow = try XCTUnwrap(base.level(at: now))
+        // A gauge reading 0.2 m above the forecast, just taken.
+        s.latestObservation = TimeSeriesPoint(date: now, value: fcNow + 0.2)
+        XCTAssertEqual(try XCTUnwrap(s.level(at: now)), fcNow + 0.2, accuracy: 1e-9)
+        // Fifteen minutes on: mostly still the measurement's offset…
+        let t15 = now + 900
+        let gap15 = try XCTUnwrap(s.level(at: t15)) - XCTUnwrap(base.level(at: t15))
+        XCTAssertEqual(gap15, 0.2 * exp(-0.25), accuracy: 1e-6)
+        // …and back on the forecast a few hours later.
+        let t4 = now + 4 * 3_600
+        let gap4 = try XCTUnwrap(s.level(at: t4)) - XCTUnwrap(base.level(at: t4))
+        XCTAssertLessThan(abs(gap4), 0.01)
+    }
+
     func testStoreRoundTripsIncludingNaNGaps() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }

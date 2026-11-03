@@ -119,11 +119,28 @@ public struct ForecastSnapshot: Codable, Sendable, Hashable {
         return a + w * (b - a)
     }
 
-    /// Best estimate of the water level at `date`: the forecast where it
-    /// exists, otherwise the latest observation (if close) or the tide.
+    /// e-folding time for the gap between the latest measurement and the
+    /// forecast to close.
+    public static let observationAnchorHours = 1.0
+
+    /// Best estimate of the water level at `date`. Near the latest
+    /// observation it is anchored to it, so a widget shows what the gauge
+    /// measured (as the app does), easing onto the forecast over the next
+    /// hour or so rather than jumping. Otherwise the forecast, or the tide
+    /// table plus the current anomaly.
     public func level(at date: Date) -> Double? {
-        if let v = interpolate(total, at: date) { return v }
-        if let o = latestObservation, abs(date.timeIntervalSince(o.date)) < 1_800 { return o.value }
+        let forecast = interpolate(total, at: date)
+        if let o = latestObservation {
+            let lag = date.timeIntervalSince(o.date)
+            if lag > -1_800 {
+                guard let forecast else { return lag < 1_800 ? o.value : nil }
+                if let atObservation = interpolate(total, at: o.date) {
+                    let weight = exp(-max(lag, 0) / 3_600 / Self.observationAnchorHours)
+                    return forecast + (o.value - atObservation) * weight
+                }
+            }
+        }
+        if let forecast { return forecast }
         return interpolate(predicted, at: date).map { $0 + (currentAnomaly ?? 0) }
     }
 

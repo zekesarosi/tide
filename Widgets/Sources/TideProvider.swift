@@ -19,14 +19,20 @@ struct TideEntry: TimelineEntry {
 /// datum, it fetches a fresh 48-hour forecast with TideKit, the same
 /// pipeline the app uses.
 struct TideProvider: AppIntentTimelineProvider {
-    /// Fetch a new forecast when the saved one is older than this.
-    static let maxAge: TimeInterval = 45 * 60
+    /// Fetch a new forecast when the saved one is older than this. NOAA
+    /// gauges report every 6 minutes; 20 minutes keeps the widget close to
+    /// the app without spending the daily reload budget (~72 a day at most,
+    /// and WidgetKit spaces reloads out further when the widget isn't seen).
+    static let maxAge: TimeInterval = 20 * 60
+    /// How soon to ask WidgetKit for the next reload, after a good or a failed one.
+    static let reloadAfter: TimeInterval = 20 * 60
+    static let reloadAfterFailure: TimeInterval = 45 * 60
     /// Entries step the "now" marker forward between refreshes.
     static let entrySpacing: TimeInterval = 15 * 60
     /// Cover up to 12 h so the widget keeps moving if reloads are throttled.
     static let entryHorizon: TimeInterval = 12 * 3_600
     /// After a failed fetch, don't try again (unless forced) for this long.
-    static let failureBackoff: TimeInterval = 45 * 60
+    static let failureBackoff: TimeInterval = 30 * 60
     static let lastFailureKey = "widget.lastFailure"
 
     func placeholder(in context: Context) -> TideEntry {
@@ -48,7 +54,7 @@ struct TideProvider: AppIntentTimelineProvider {
     func timeline(for configuration: SelectStationIntent, in context: Context) async -> Timeline<TideEntry> {
         let settings = SharedSettings.load()
         let (entries, fresh) = await currentEntries(configuration, settings: settings)
-        let next = Date().addingTimeInterval(fresh ? 30 * 60 : 60 * 60)
+        let next = Date().addingTimeInterval(fresh ? Self.reloadAfter : Self.reloadAfterFailure)
         return Timeline(entries: entries, policy: .after(next))
     }
 
