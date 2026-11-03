@@ -49,6 +49,9 @@ targets:
           - CFBundleURLName: $(TIDE_BUNDLE_ID)
             CFBundleURLSchemes: [tideforecast]
         ITSAppUsesNonExemptEncryption: false
+        # Morning summary: refresh the forecast shortly before it's due.
+        UIBackgroundModes: [fetch]
+        BGTaskSchedulerPermittedIdentifiers: [$(PRODUCT_BUNDLE_IDENTIFIER).morning]
         # Injected from Config/App.xcconfig (+ optional Config/Secrets.xcconfig).
         TideAppName: $(TIDE_APP_NAME)
         TideContact: $(TIDE_CONTACT)

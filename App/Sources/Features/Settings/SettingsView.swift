@@ -29,6 +29,7 @@ struct SettingsView: View {
             } footer: {
                 Text("When available, the station-calibrated surge model is blended with the National Weather Service's official coastal water level forecast, weighted by each one's recent accuracy.")
             }
+            MorningSummarySection()
             Section {
                 NavigationLink("API keys") { APIKeysView() }
                 NavigationLink("Data sources & attribution") { DataSourcesView() }
@@ -162,4 +163,78 @@ struct DataSourcesView: View {
     }
 
     private func keyFor(_ id: DataSourceID) -> CredentialKey? { CredentialKey.allCases.first { $0.source == id } }
+}
+
+/// Morning summary: on/off (off by default), time, and which favorite.
+private struct MorningSummarySection: View {
+    @Environment(AppEnvironment.self) private var env
+    @Environment(AppSettings.self) private var settings
+    @Environment(StationStore.self) private var store
+    @Environment(\.openURL) private var openURL
+    @State private var denied = false
+
+    private var time: Binding<Date> {
+        Binding {
+            Calendar.current.date(bySettingHour: settings.morningMinutes / 60, minute: settings.morningMinutes % 60,
+                                  second: 0, of: Date()) ?? Date()
+        } set: { d in
+            let c = Calendar.current.dateComponents([.hour, .minute], from: d)
+            settings.morningMinutes = (c.hour ?? 7) * 60 + (c.minute ?? 0)
+        }
+    }
+
+    private var station: Binding<String> {
+        Binding { settings.morningStationOrFirstFavorite ?? "" } set: { settings.morningStationID = $0 }
+    }
+
+    private var enabled: Binding<Bool> {
+        Binding { settings.morningEnabled } set: { on in
+            guard on else { settings.morningEnabled = false; return }
+            Task {
+                switch await env.morning.authorizationStatus() {
+                case .authorized, .provisional, .ephemeral:
+                    settings.morningEnabled = true
+                case .notDetermined:
+                    let granted = await env.morning.requestAuthorization()
+                    settings.morningEnabled = granted
+                    denied = !granted
+                default:
+                    denied = true
+                }
+            }
+        }
+    }
+
+    var body: some View {
+        Section {
+            Toggle("Morning summary", isOn: enabled)
+            if settings.morningEnabled {
+                DatePicker("Time", selection: time, displayedComponents: .hourAndMinute)
+                if settings.favoriteIDs.isEmpty {
+                    Text("Star a station to get its summary.").foregroundStyle(Theme.warning)
+                } else {
+                    Picker("Station", selection: station) {
+                        ForEach(settings.favoriteIDs, id: \.self) { id in
+                            Text(store.station(id: id)?.name ?? id).tag(id)
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text("Notifications")
+        } footer: {
+            if denied {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Notifications are turned off for Tide & Surge in iOS Settings.")
+                    Button("Open Settings") {
+                        if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
+                    }
+                }
+            } else {
+                Text("Each morning: the day's high and low tides, and what's pushing the water above or below the tide table when it's 0.2 ft or more. Built from the latest forecast the app has; opening the app keeps it fresh.")
+            }
+        }
+        .task(id: settings.morningSignature) { await env.morning.reschedule() }
+        .task { if await env.morning.authorizationStatus() == .denied, settings.morningEnabled { denied = true } }
+    }
 }

@@ -15,6 +15,8 @@ final class AppEnvironment {
     /// San Francisco Bay analysis, loaded when the map first shows the bay.
     let bay = BayModel()
     let router = AppRouter()
+    /// Morning summary notifications.
+    let morning: MorningNotifier
 
     init() {
         identity = AppIdentity.fromBundle()
@@ -26,6 +28,7 @@ final class AppEnvironment {
         settings = AppSettings()
         stations = StationStore()
         location = LocationProvider()
+        morning = MorningNotifier(service: service, settings: settings, stations: stations, router: router)
     }
 
     /// True when the NWS-required contact has not been set in Config/App.xcconfig.
@@ -57,6 +60,8 @@ final class AppRouter {
     var tab: Tab = .stations
     /// Consumed by the map once it has moved there.
     var bayFocus: BayFocus?
+    /// A station to open in the Tides tab (e.g. from a notification).
+    var openStationID: String?
 
     func showBay(code: String? = nil) {
         bayFocus = BayFocus(code: code)

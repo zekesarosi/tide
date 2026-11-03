@@ -271,6 +271,45 @@ final class ForecasterTests: XCTestCase {
         for e in f.events { XCTAssertEqual(e.total, e.astronomical + e.surge, accuracy: 1e-9) }
     }
 
+    func testDailyBriefingExplainsTheSurgeAtTheDaysPeak() throws {
+        let predictor = try batteryPredictor()
+        let trainStart = now - 33 * 86_400
+        let met = forcing(from: trainStart, hours: 33 * 24 + 10 * 24)
+        // Water running a steady +0.3 m above the tide table.
+        var obs: [TimeSeriesPoint] = []
+        var t = trainStart
+        while t <= now {
+            obs.append(.init(date: t, value: predictor.height(at: t) + 0.3 + 0.02 * sin(t.timeIntervalSince1970 / 40_000)))
+            t += 360
+        }
+        let station = Station(source: .noaaCoops, code: "8518750", name: "The Battery", latitude: 40.7, longitude: -74.01)
+        let f = TotalWaterLevelForecaster.forecast(ForecastInputs(
+            station: station, datum: .mllw, issueTime: now, horizonHours: 30 * 24,
+            astronomical: .harmonic(predictor), observations: TimeSeries(points: obs), forcing: met))
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "America/New_York")!
+
+        let tomorrow = try XCTUnwrap(cal.dateInterval(of: .day, for: now + 86_400))
+        let b = try XCTUnwrap(DailyBriefing.make(forecast: f, day: tomorrow))
+        XCTAssertFalse(b.isOutlook)
+        XCTAssertGreaterThanOrEqual(b.highs.count, 1)
+        XCTAssertGreaterThanOrEqual(b.highs.count + b.lows.count, 3)
+        let peak = try XCTUnwrap(b.peak)
+        XCTAssertEqual(peak.total, b.highs.map(\.total).max())
+        XCTAssertEqual(try XCTUnwrap(b.surge), 0.3, accuracy: 0.1)
+        // Explained, largest first, and adding up to (about) the surge.
+        XCTAssertFalse(b.drivers.isEmpty)
+        XCTAssertEqual(b.drivers, b.drivers.sorted { abs($0.value) > abs($1.value) })
+        XCTAssertEqual(b.drivers.reduce(0) { $0 + $1.value }, peak.surge, accuracy: 0.05)
+
+        // Past the weather forecast: tides, but no breakdown.
+        let late = try XCTUnwrap(cal.dateInterval(of: .day, for: now + 25 * 86_400))
+        let o = try XCTUnwrap(DailyBriefing.make(forecast: f, day: late))
+        XCTAssertTrue(o.isOutlook)
+        XCTAssertTrue(o.drivers.isEmpty)
+        XCTAssertFalse(o.highs.isEmpty)
+    }
+
     func testNoObservationsFallsBackToUncalibrated() throws {
         let predictor = try batteryPredictor()
         let station = Station(source: .ukAdmiralty, code: "0001", name: "Test", latitude: 50, longitude: -1)

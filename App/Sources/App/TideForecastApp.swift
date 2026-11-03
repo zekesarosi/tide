@@ -14,6 +14,10 @@ struct TideForecastApp: App {
                 .environment(environment.location)
                 .task { await environment.stations.load(service: environment.service) }
         }
+        // Refresh the morning summaries shortly before they're due.
+        .backgroundTask(.appRefresh(MorningNotifier.taskID)) {
+            await environment.morning.reschedule()
+        }
     }
 }
 
@@ -22,6 +26,7 @@ struct RootView: View {
 
     @Environment(AppEnvironment.self) private var env
     @Environment(StationStore.self) private var store
+    @Environment(\.scenePhase) private var scenePhase
     /// Holds `Station`s and `RegionRoute`s: every push in the Tides tab goes
     /// through the path, so pushing a station never drops the screens below.
     @State private var stationPath = NavigationPath()
@@ -52,6 +57,15 @@ struct RootView: View {
             openPendingStation()
         }
         .onChange(of: store.stations.count) { _, _ in openPendingStation() }
+        .onChange(of: env.router.openStationID) { _, id in
+            guard let id else { return }
+            env.router.openStationID = nil
+            pendingStationID = id
+            openPendingStation()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await env.morning.rescheduleIfStale() } }
+        }
     }
 
     private func openPendingStation() {

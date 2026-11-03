@@ -77,6 +77,9 @@ enum SharedSettingsKeys {
     static let horizon = "settings.horizonHours"
     static let blend = "settings.blendOfficial"
     static let favorites = "settings.favorites"
+    static let morningEnabled = "settings.morning.enabled"
+    static let morningMinutes = "settings.morning.minutes"
+    static let morningStation = "settings.morning.station"
 }
 
 struct SharedSettings {

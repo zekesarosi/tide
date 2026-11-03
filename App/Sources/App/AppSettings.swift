@@ -14,6 +14,12 @@ final class AppSettings {
     var horizonHours: Int { didSet { defaults.set(horizonHours, forKey: Keys.horizon) } }
     var blendOfficialGuidance: Bool { didSet { defaults.set(blendOfficialGuidance, forKey: Keys.blend) } }
     var favoriteIDs: [String] { didSet { defaults.set(favoriteIDs, forKey: Keys.favorites); WidgetBridge.settingsChanged() } }
+    /// Morning summary notification (off by default).
+    var morningEnabled: Bool { didSet { defaults.set(morningEnabled, forKey: Keys.morningEnabled) } }
+    /// Local time of the summary, minutes after midnight (default 7:00).
+    var morningMinutes: Int { didSet { defaults.set(morningMinutes, forKey: Keys.morningMinutes) } }
+    /// Station to summarize; nil means the first favorite.
+    var morningStationID: String? { didSet { defaults.set(morningStationID, forKey: Keys.morningStation) } }
 
     /// Datums offered for NOAA stations.
     static let selectableDatums: [TidalDatum] = [.mllw, .mlw, .msl, .mhw, .mhhw, .navd88]
@@ -32,10 +38,25 @@ final class AppSettings {
         horizonHours = Self.horizons.contains(h) ? h : Self.defaultHorizon
         blendOfficialGuidance = defaults.object(forKey: Keys.blend) as? Bool ?? true
         favoriteIDs = defaults.stringArray(forKey: Keys.favorites) ?? []
+        morningEnabled = defaults.bool(forKey: Keys.morningEnabled)
+        morningMinutes = defaults.object(forKey: Keys.morningMinutes) as? Int ?? 7 * 60
+        morningStationID = defaults.string(forKey: Keys.morningStation)
     }
 
     var forecastOptions: ForecastOptions {
         ForecastOptions(datum: datum, horizonHours: horizonHours, blendOfficialGuidance: blendOfficialGuidance)
+    }
+
+    /// The station the morning summary covers: the chosen one while it is
+    /// still a favorite, else the first favorite.
+    var morningStationOrFirstFavorite: String? {
+        if let id = morningStationID, favoriteIDs.contains(id) { return id }
+        return favoriteIDs.first
+    }
+
+    /// Everything that changes what the morning notifications say.
+    var morningSignature: String {
+        "\(morningEnabled)|\(morningMinutes)|\(morningStationOrFirstFavorite ?? "-")|\(unit.rawValue)|\(datum.rawValue)|\(horizonHours)|\(blendOfficialGuidance)"
     }
 
     func isFavorite(_ station: Station) -> Bool { favoriteIDs.contains(station.id) }
