@@ -85,9 +85,12 @@ struct TideProvider: AppIntentTimelineProvider {
         if needsFetch {
             if forced { AppGroup.defaults.removeObject(forKey: RefreshTideIntent.forceKey) }
             do {
-                let s = try await Self.fetch(station, datum: settings.datum)
+                let forecast = try await Self.fetch(station, datum: settings.datum)
+                let s = ForecastSnapshot(forecast: forecast)
                 try? AppGroup.snapshots.save(s)
                 snap = s
+                // Keep tomorrow's morning summary as fresh as the widget.
+                await MorningSchedule.refresh(from: forecast, station: station, settings: settings)
                 fresh = true
                 AppGroup.defaults.removeObject(forKey: Self.lastFailureKey)
             } catch {
@@ -106,13 +109,13 @@ struct TideProvider: AppIntentTimelineProvider {
         return (entries, fresh)
     }
 
-    static func fetch(_ station: Station, datum: TidalDatum) async throws -> ForecastSnapshot {
+    static func fetch(_ station: Station, datum: TidalDatum) async throws -> WaterLevelForecast {
         let service = ForecastService(api: APIClient(identity: AppIdentity.fromBundle(), credentials: AppGroup.credentials()))
         let options = ForecastOptions(datum: datum, horizonHours: 48, blendOfficialGuidance: true)
         let result = try await withTimeout(seconds: 25) {
             try await service.forecast(for: station, options: options)
         }
-        return ForecastSnapshot(forecast: result.forecast)
+        return result.forecast
     }
 }
 

@@ -86,13 +86,25 @@ struct SharedSettings {
     var unit: LengthUnit
     var datum: TidalDatum
     var favoriteIDs: [String]
+    var morningEnabled = false
+    var morningMinutes = 7 * 60
+    var morningStationID: String?
 
     static func load(_ d: UserDefaults = AppGroup.defaults) -> SharedSettings {
         let defaultUnit: LengthUnit = Locale.current.measurementSystem == .us ? .feet : .meters
         return SharedSettings(
             unit: d.string(forKey: SharedSettingsKeys.unit).flatMap(LengthUnit.init(rawValue:)) ?? defaultUnit,
             datum: d.string(forKey: SharedSettingsKeys.datum).flatMap(TidalDatum.init(rawValue:)) ?? .mllw,
-            favoriteIDs: d.stringArray(forKey: SharedSettingsKeys.favorites) ?? [])
+            favoriteIDs: d.stringArray(forKey: SharedSettingsKeys.favorites) ?? [],
+            morningEnabled: d.bool(forKey: SharedSettingsKeys.morningEnabled),
+            morningMinutes: d.object(forKey: SharedSettingsKeys.morningMinutes) as? Int ?? 7 * 60,
+            morningStationID: d.string(forKey: SharedSettingsKeys.morningStation))
+    }
+
+    /// The station the morning summary covers (same rule as the app).
+    var morningStation: String? {
+        if let id = morningStationID, favoriteIDs.contains(id) { return id }
+        return favoriteIDs.first
     }
 
     /// The datum a forecast for `station` uses under these settings.
