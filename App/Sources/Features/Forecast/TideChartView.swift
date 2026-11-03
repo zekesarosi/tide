@@ -16,7 +16,9 @@ struct TideLineChart: View {
     }
 
     @State private var window: Window = .day
-    @State private var selection: Date?
+    /// The moment being scrubbed. Not plain `@State` for the same reason as
+    /// `scroll`: only the cursor overlay and the readout row observe it.
+    @State private var selection = SelectionState()
     /// Leading edge of the visible range while scrolling. Not plain `@State`:
     /// the chart writes it on every scroll frame, and a state change would
     /// re-run this body and rebuild every mark each frame.
@@ -305,8 +307,8 @@ struct TideLineChart: View {
 
             ScrollHome(scroll: scroll, home: homeStart, now: forecast.issued,
                        length: visibleLength(series.domain), enabled: scrollable(series.domain), reduceMotion: reduceMotion) { away in
-                if let selection {
-                    SelectionReadout(forecast: forecast, date: selection, unit: unit, tz: tz)
+                if let date = selection.date {
+                    SelectionReadout(forecast: forecast, date: date, unit: unit, tz: tz)
                 } else {
                     legend(compact: away)
                 }
@@ -391,10 +393,6 @@ struct TideLineChart: View {
                         }
                 }
             }
-            if let selection {
-                RuleMark(x: .value("Selected", selection))
-                    .foregroundStyle(Theme.ink.opacity(0.35))
-            }
         }
         .chartForegroundStyleScale(domain: Layer.allCases.map(\.rawValue), range: Self.layerColors)
         .chartLegend(.hidden)
@@ -414,7 +412,18 @@ struct TideLineChart: View {
                 }
             }
         }
-        .chartXSelection(value: $selection)
+        .chartXSelection(value: selection.chartBinding)
+        .chartOverlay { proxy in
+            SelectionCursor(selection: selection, proxy: proxy, level: cursorLevel)
+        }
+    }
+
+    /// Height of the drawn line at `date`, in display units: observed before
+    /// the forecast starts, then the forecast.
+    private func cursorLevel(_ date: Date) -> Double? {
+        let cut = forecast.total.first?.date ?? forecast.issued
+        let m = date < cut ? forecast.observed.value(at: date, maxGap: 1_200) : forecast.total.value(at: date, maxGap: 1_200)
+        return m.map(unit.fromMeters)
     }
 
     private func legend(compact: Bool) -> some View {
@@ -625,6 +634,55 @@ private struct HLine: Shape {
         p.move(to: CGPoint(x: rect.minX, y: rect.midY))
         p.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
         return p
+    }
+}
+
+/// The scrubbed moment, written by the chart's selection gesture. The chart
+/// reads and writes `chartValue`, which nothing observes, so a scrub doesn't
+/// re-run `TideLineChart.body`; `date` mirrors it for the cursor and readout.
+@Observable
+private final class SelectionState {
+    @ObservationIgnored private var chartValue: Date?
+    private(set) var date: Date?
+
+    var chartBinding: Binding<Date?> {
+        Binding(get: { self.chartValue }, set: {
+            self.chartValue = $0
+            self.date = $0
+        })
+    }
+}
+
+/// The scrub line and a dot on the curve, drawn over the chart rather than
+/// as chart marks, so moving them redraws two shapes instead of the chart.
+private struct SelectionCursor: View {
+    let selection: SelectionState
+    let proxy: ChartProxy
+    let level: (Date) -> Double?
+
+    var body: some View {
+        GeometryReader { geo in
+            if let date = selection.date, let anchor = proxy.plotFrame,
+               let x = proxy.position(forX: date) {
+                let plot = geo[anchor]
+                let px = plot.minX + x
+                if px >= plot.minX - 1, px <= plot.maxX + 1 {
+                    Rectangle()
+                        .fill(Theme.ink.opacity(0.35))
+                        .frame(width: 1, height: plot.height)
+                        .position(x: px, y: plot.midY)
+                    if let v = level(date), let y = proxy.position(forY: v) {
+                        Circle()
+                            .fill(Theme.surface)
+                            .overlay(Circle().strokeBorder(Theme.ink.opacity(0.7), lineWidth: 2))
+                            .frame(width: 10, height: 10)
+                            .position(x: px, y: plot.minY + y)
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
