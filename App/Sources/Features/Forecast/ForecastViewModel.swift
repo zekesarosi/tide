@@ -27,8 +27,9 @@ final class ForecastViewModel {
 
     /// Starts from this session's last forecast for the station, if any, so
     /// the screen draws immediately.
-    init(station: Station, cache: ForecastCache = .shared) {
+    init(station: Station, cache: ForecastCache? = nil) {
         self.station = station
+        let cache = cache ?? .shared
         self.cache = cache
         if let r = cache.cached(station) {
             result = r
