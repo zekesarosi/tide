@@ -89,7 +89,7 @@ public struct ForecastInputs: Sendable {
     }
 }
 
-public struct SurgeForecastPoint: Sendable, Hashable, Identifiable {
+public struct SurgeForecastPoint: Sendable, Hashable, Identifiable, Codable {
     public var id: Date { date }
     public var date: Date
     /// Blended non-tidal residual (m).
@@ -107,7 +107,7 @@ public struct SurgeForecastPoint: Sendable, Hashable, Identifiable {
     public var officialWeight: Double
 }
 
-public struct ForecastEvent: Sendable, Hashable, Identifiable {
+public struct ForecastEvent: Sendable, Hashable, Identifiable, Codable {
     public var id: Date { date }
     public var date: Date
     public var kind: TideExtremeKind
@@ -123,7 +123,7 @@ public struct ForecastEvent: Sendable, Hashable, Identifiable {
     public var upper80: Double { total + 1.2816 * sigma }
 }
 
-public struct WaterLevelForecast: Sendable, Hashable {
+public struct WaterLevelForecast: Sendable, Hashable, Codable {
     public var station: Station
     public var datum: TidalDatum
     public var issued: Date
@@ -155,7 +155,7 @@ public struct WaterLevelForecast: Sendable, Hashable {
     /// long-range outlook (tide table + typical surge). Nil if there is none.
     public var weatherHorizon: Date? = nil
 
-    public enum Method: String, Sendable, Hashable {
+    public enum Method: String, Sendable, Hashable, Codable {
         /// Calibrated regression + AR(1) persistence (+ official blend).
         case calibrated
         /// No usable observations: inverse barometer only.

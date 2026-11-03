@@ -16,15 +16,36 @@ final class ForecastViewModel {
     private(set) var phase: Phase = .idle
     private(set) var result: ForecastResult?
     private(set) var lastOptions: ForecastOptions?
+    /// Set when a background refresh fails while an older forecast is shown.
+    private(set) var refreshError: String?
 
-    /// Forecasts older than this are refreshed when the view appears.
-    static let staleAfter: TimeInterval = 15 * 60
+    /// Forecasts older than this are refreshed (in the background, over the
+    /// cached one) when the view appears.
+    static let staleAfter: TimeInterval = 2 * 60
 
-    init(station: Station) { self.station = station }
+    private let cache: ForecastCache
+
+    /// Starts from this session's last forecast for the station, if any, so
+    /// the screen draws immediately.
+    init(station: Station, cache: ForecastCache = .shared) {
+        self.station = station
+        self.cache = cache
+        if let r = cache.cached(station) {
+            result = r
+            phase = .loaded
+        }
+    }
 
     var forecast: WaterLevelForecast? { result?.forecast }
 
+    /// Show what's cached (memory, else disk) right away, then refresh if it
+    /// is stale or was built with other settings.
     func loadIfNeeded(service: ForecastService, options: ForecastOptions) async {
+        if result == nil, let r = await cache.load(station), r.datum == expectedDatum(options) {
+            result = r
+            lastOptions = nil   // unknown options: refresh below
+            if phase != .loading { phase = .loaded }
+        }
         if let r = result, lastOptions == options, Date().timeIntervalSince(r.forecast.issued) < Self.staleAfter { return }
         await load(service: service, options: options)
     }
@@ -35,13 +56,30 @@ final class ForecastViewModel {
         do {
             let r = try await service.forecast(for: station, options: options)
             result = r
+            refreshError = nil
+            cache.store(r, for: station)
             WidgetBridge.publish(r.forecast)
             lastOptions = options
             phase = .loaded
         } catch is CancellationError {
             phase = result == nil ? .idle : .loaded
         } catch {
-            phase = .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            if result != nil {
+                // Keep showing the last forecast; say it's not current.
+                refreshError = message
+                phase = .loaded
+            } else {
+                phase = .failed(message)
+            }
+        }
+    }
+
+    /// The datum a forecast for this station uses under `options`.
+    private func expectedDatum(_ options: ForecastOptions) -> TidalDatum {
+        switch station.source {
+        case .noaaCoops: return station.isTidal ? options.datum : .igld
+        default: return .chartDatum
         }
     }
 

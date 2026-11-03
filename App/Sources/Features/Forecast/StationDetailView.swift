@@ -84,6 +84,12 @@ struct StationDetailView: View {
             Text(subtitle)
                 .font(.footnote)
                 .foregroundStyle(Theme.inkSecondary)
+            if model.refreshError != nil {
+                Label("Couldn't update; showing the last forecast. Pull to retry.", systemImage: "wifi.exclamationmark")
+                    .font(.caption)
+                    .foregroundStyle(Theme.warning)
+                    .padding(.top, 2)
+            }
         }
         .padding(.horizontal, Theme.margin)
         .padding(.top, 4)
@@ -94,7 +100,7 @@ struct StationDetailView: View {
         var parts: [String] = []
         if let r = station.region, !r.isEmpty { parts.append(r) }
         if station.source == .noaaCoops { parts.append("NOAA \(station.code)") } else { parts.append(DataSourceInfo.info(station.source).agency) }
-        if let f = model.forecast { parts.append("Updated \(Fmt.time(f.issued, in: tz))") }
+        if let f = model.forecast { parts.append("Updated \(Fmt.smartTime(f.issued, in: tz))") }
         return parts.joined(separator: " · ")
     }
 

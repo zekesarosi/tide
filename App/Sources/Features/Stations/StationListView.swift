@@ -192,6 +192,7 @@ final class FavoritesModel {
             for s in due {
                 group.addTask {
                     let result = try? await service.forecast(for: s, options: options)
+                    if let result { await ForecastCache.shared.store(result, for: s) }
                     return (s.id, result.map { ForecastSnapshot(forecast: $0.forecast) })
                 }
             }

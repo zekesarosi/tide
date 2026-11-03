@@ -310,6 +310,18 @@ final class ForecasterTests: XCTestCase {
         XCTAssertFalse(o.highs.isEmpty)
     }
 
+    func testForecastRoundTripsThroughDisk() throws {
+        let predictor = try batteryPredictor()
+        let station = Station(source: .noaaCoops, code: "8518750", name: "The Battery", latitude: 40.7, longitude: -74.01)
+        let f = TotalWaterLevelForecaster.forecast(ForecastInputs(
+            station: station, datum: .mllw, issueTime: now, horizonHours: 72, astronomical: .harmonic(predictor),
+            observations: .empty, forcing: forcing(from: now - 3 * 86_400, hours: 24 * 7)))
+        let r = ForecastResult(forecast: f, sources: [SourceStatus(source: .openMeteo, component: "x", ok: true, message: nil)],
+                               datum: .mllw, datums: nil)
+        let data = try PropertyListEncoder().encode(r)
+        XCTAssertEqual(try PropertyListDecoder().decode(ForecastResult.self, from: data), r)
+    }
+
     func testNoObservationsFallsBackToUncalibrated() throws {
         let predictor = try batteryPredictor()
         let station = Station(source: .ukAdmiralty, code: "0001", name: "Test", latitude: 50, longitude: -1)

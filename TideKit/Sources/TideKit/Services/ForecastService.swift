@@ -15,7 +15,7 @@ public struct ForecastOptions: Sendable, Hashable, Codable {
 
 /// Status of each upstream fetch, surfaced in the UI so users can see what a
 /// forecast is (and isn't) built from.
-public struct SourceStatus: Sendable, Hashable, Identifiable {
+public struct SourceStatus: Sendable, Hashable, Identifiable, Codable {
     public var id: String { "\(source.rawValue):\(component)" }
     public var source: DataSourceID
     public var component: String
@@ -25,7 +25,7 @@ public struct SourceStatus: Sendable, Hashable, Identifiable {
     public var duration: TimeInterval = 0
 }
 
-public struct ForecastResult: Sendable, Hashable {
+public struct ForecastResult: Sendable, Hashable, Codable {
     public var forecast: WaterLevelForecast
     public var sources: [SourceStatus]
     /// Datum actually used (may differ from the request, e.g. Great Lakes use IGLD).
