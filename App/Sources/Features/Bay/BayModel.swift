@@ -123,24 +123,33 @@ final class BayClock {
 
     init(time: Date) { self.time = time }
 
-    /// Runs while `playing`: one hour of tide per second, so a tidal day
-    /// plays in about 25 s, looping. With Reduce Motion it steps a quarter
-    /// hour at a time instead.
+    /// Tide time per second of playback: a tidal day plays in about 25 s.
+    static let rate: TimeInterval = 3_600
+
+    /// Runs while `playing`, looping over the day. Advances on every display
+    /// frame by the frame's real duration, so the markers, strip cursor and
+    /// readout move continuously. With Reduce Motion it steps a quarter hour
+    /// at a time instead. Ends when playback stops or the task is cancelled.
     func run(day: BayDay, reduceMotion: Bool) async {
         guard playing else { return }
         if time >= day.end - 60 { time = day.start }
-        var last = Date()
-        while playing, !Task.isCancelled {
-            if reduceMotion {
+        if reduceMotion {
+            while playing, !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(700))
                 time += 15 * 60
-            } else {
-                try? await Task.sleep(for: .milliseconds(33))
-                let now = Date()
-                time += now.timeIntervalSince(last) * 3_600
-                last = now
+                if time >= day.end { time = day.start }
             }
-            if time >= day.end { time = day.start }
+            return
         }
+        let driver = FrameDriver()
+        driver.run { [weak self] dt in
+            guard let self, self.playing else { return false }
+            let next = self.time + dt * Self.rate
+            self.time = next >= day.end ? day.start : next
+            return true
+        }
+        // Hold the task while the driver plays; cancellation ends the sleep.
+        while playing, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(250)) }
+        driver.stop()
     }
 }
