@@ -103,14 +103,19 @@ public actor APIClient {
     let baseBackoff: TimeInterval
     /// Minimum spacing between requests to the same host.
     let hostSpacing: [String: TimeInterval]
+    /// Second-level cache on disk, shared across launches and processes.
+    let diskCache: DiskResponseCache?
+    private var prunedDisk = false
 
     private var lastRequestAt: [String: Date] = [:]
-    private var cache: [String: (expires: Date, data: Data)] = [:]
+    private var cache: [String: (expires: Date, ttl: TimeInterval, data: Data)] = [:]
     private var inFlight: [String: Task<Data, Error>] = [:]
 
     public init(identity: AppIdentity, credentials: CredentialStore, transport: HTTPTransport = URLSessionTransport(),
                 maxAttempts: Int = 3, baseBackoff: TimeInterval = 1.0,
-                hostSpacing: [String: TimeInterval] = APIClient.defaultHostSpacing) {
+                hostSpacing: [String: TimeInterval] = APIClient.defaultHostSpacing,
+                diskCache: DiskResponseCache? = nil) {
+        self.diskCache = diskCache
         self.identity = identity
         self.credentials = credentials
         self.transport = transport
@@ -126,13 +131,29 @@ public actor APIClient {
         "admiraltyapi.azure-api.net": 0.25,
     ]
 
-    public func clearCache() { cache.removeAll() }
+    /// Forget cached responses. `volatileOnly` (a manual refresh) keeps the
+    /// slow-changing reference data on disk: it can't be stale in a way a
+    /// refresh would fix.
+    public func clearCache(volatileOnly: Bool = false) {
+        if volatileOnly {
+            cache = cache.filter { $0.value.ttl >= DiskResponseCache.volatileTTL }
+            diskCache?.prune(volatileOnly: true)
+        } else {
+            cache.removeAll()
+            diskCache?.removeAll()
+        }
+    }
 
     /// Fetch raw bytes, coalescing concurrent identical requests.
     public func data(for endpoint: Endpoint) async throws -> Data {
         let request = try authorize(endpoint)
         let key = Self.cacheKey(for: request)
         if endpoint.cacheTTL > 0, let hit = cache[key], hit.expires > Date() { return hit.data }
+        if endpoint.cacheTTL > 0, let disk = diskCache?.read(key) {
+            // Another launch or process fetched it; its expiry is in the file.
+            cache[key] = (Date().addingTimeInterval(min(endpoint.cacheTTL, 60)), endpoint.cacheTTL, disk)
+            return disk
+        }
         if let task = inFlight[key] { return try await Self.awaitCancellable(task) }
 
         let task = Task { try await self.perform(request, source: endpoint.source) }
@@ -144,7 +165,14 @@ public actor APIClient {
                 let now = Date()
                 cache = cache.filter { $0.value.expires > now }
             }
-            cache[key] = (Date().addingTimeInterval(endpoint.cacheTTL), data)
+            cache[key] = (Date().addingTimeInterval(endpoint.cacheTTL), endpoint.cacheTTL, data)
+            if let diskCache {
+                diskCache.write(data, for: key, ttl: endpoint.cacheTTL)
+                if !prunedDisk {
+                    prunedDisk = true
+                    Task.detached(priority: .utility) { diskCache.prune() }
+                }
+            }
         }
         return data
     }

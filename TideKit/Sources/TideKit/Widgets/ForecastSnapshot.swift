@@ -6,7 +6,7 @@ import Foundation
 ///
 /// Everything a widget renders between refreshes is derived from this value,
 /// so a timeline can step the "now" marker forward without network access.
-public struct ForecastSnapshot: Codable, Sendable, Hashable {
+public struct ForecastSnapshot: Codable, Sendable, Hashable, WaterLevelTimeline {
     public static let currentVersion = 1
 
     public struct Event: Codable, Sendable, Hashable, Identifiable {
@@ -29,6 +29,10 @@ public struct ForecastSnapshot: Codable, Sendable, Hashable {
     public var datum: TidalDatum
     public var issued: Date
     public var calibrated: Bool
+    /// Whether official guidance was blended in (nil: written by an older
+    /// version, so unknown). With `datum`, what a reader checks to know the
+    /// snapshot was built with its settings.
+    public var blendOfficialGuidance: Bool?
 
     /// Regular grid for the curves below: `start + i * step`.
     public var start: Date
@@ -55,8 +59,15 @@ public struct ForecastSnapshot: Codable, Sendable, Hashable {
     public var timeZone: TimeZone { timeZoneIdentifier.flatMap(TimeZone.init(identifier:)) ?? .current }
     public var end: Date { start + step * Double(max(total.count - 1, 0)) }
 
-    public init(forecast f: WaterLevelForecast, pastHours: Double = 12, futureHours: Double = 48, step: TimeInterval = 1_800) {
+    /// The snapshot of a service result, stamped with the options it used.
+    public init(result r: ForecastResult) {
+        self.init(forecast: r.forecast, blendOfficialGuidance: r.options?.blendOfficialGuidance)
+    }
+
+    public init(forecast f: WaterLevelForecast, blendOfficialGuidance: Bool? = nil,
+                pastHours: Double = 12, futureHours: Double = 48, step: TimeInterval = 1_800) {
         version = Self.currentVersion
+        self.blendOfficialGuidance = blendOfficialGuidance
         stationID = f.station.id
         stationName = f.station.name
         timeZoneIdentifier = f.station.timeZoneIdentifier
@@ -119,38 +130,17 @@ public struct ForecastSnapshot: Codable, Sendable, Hashable {
         return a + w * (b - a)
     }
 
-    /// e-folding time for the gap between the latest measurement and the
-    /// forecast to close.
-    public static let observationAnchorHours = 1.0
-
-    /// Best estimate of the water level at `date`. Near the latest
-    /// observation it is anchored to it, so a widget shows what the gauge
-    /// measured (as the app does), easing onto the forecast over the next
-    /// hour or so rather than jumping. Otherwise the forecast, or the tide
-    /// table plus the current anomaly.
+    /// Best estimate of the water level at `date`, by the same rule the app
+    /// uses for full forecasts (see `Nowcast`).
     public func level(at date: Date) -> Double? {
-        let forecast = interpolate(total, at: date)
-        if let o = latestObservation {
-            let lag = date.timeIntervalSince(o.date)
-            if lag > -1_800 {
-                guard let forecast else { return lag < 1_800 ? o.value : nil }
-                if let atObservation = interpolate(total, at: o.date) {
-                    let weight = exp(-max(lag, 0) / 3_600 / Self.observationAnchorHours)
-                    return forecast + (o.value - atObservation) * weight
-                }
-            }
-        }
-        if let forecast { return forecast }
-        return interpolate(predicted, at: date).map { $0 + (currentAnomaly ?? 0) }
+        Nowcast.level(at: date,
+                      forecast: { interpolate(total, at: $0) },
+                      latest: latestObservation,
+                      fallback: { t in interpolate(predicted, at: t).map { $0 + (currentAnomaly ?? 0) } })
     }
 
     public func predictedLevel(at date: Date) -> Double? { interpolate(predicted, at: date) }
     public func uncertainty(at date: Date) -> Double? { interpolate(sigma, at: date) }
-
-    public func isRising(at date: Date) -> Bool? {
-        guard let a = level(at: date - 600), let b = level(at: date + 600) else { return nil }
-        return b > a
-    }
 
     public func nextEvents(after date: Date, limit: Int = 2) -> [Event] {
         Array(events.filter { $0.date > date }.prefix(limit))
@@ -196,6 +186,11 @@ extension ForecastSnapshot {
     /// A deterministic, clearly synthetic snapshot for widget placeholders
     /// and previews (semi-diurnal tide with a small positive surge).
     public static func sample(now: Date = Date(), name: String = "Sample Harbor") -> ForecastSnapshot {
+        ForecastSnapshot(forecast: sampleForecast(now: now, name: name))
+    }
+
+    /// The full forecast `sample` is built from.
+    public static func sampleForecast(now: Date = Date(), name: String = "Sample Harbor") -> WaterLevelForecast {
         let station = Station(source: .noaaCoops, code: "sample", name: name, latitude: 0, longitude: 0,
                               timeZoneIdentifier: TimeZone.current.identifier)
         let tide = [HarmonicConstituent(name: "M2", amplitude: 0.8, phaseGMT: 0, speed: 28.984104),
@@ -208,10 +203,9 @@ extension ForecastSnapshot {
         let forcing = (0..<(24 * 6)).map { h in
             MetSample(date: now - 3 * 86_400 + Double(h) * 3_600, pressure: 1012, windSpeed: 5, windDirection: 270)
         }
-        let f = TotalWaterLevelForecaster.forecast(ForecastInputs(
+        return TotalWaterLevelForecaster.forecast(ForecastInputs(
             station: station, datum: .mllw, issueTime: now, horizonHours: 48, astronomical: .harmonic(predictor),
             observations: TimeSeries(points: obs), forcing: forcing,
             thresholds: FloodThresholds(datum: .mllw, minor: 2.4, moderate: 2.8, major: 3.2)))
-        return ForecastSnapshot(forecast: f)
     }
 }

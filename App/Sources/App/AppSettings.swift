@@ -12,7 +12,7 @@ final class AppSettings {
     var unit: LengthUnit { didSet { defaults.set(unit.rawValue, forKey: Keys.unit); WidgetBridge.settingsChanged() } }
     var datum: TidalDatum { didSet { defaults.set(datum.rawValue, forKey: Keys.datum); WidgetBridge.settingsChanged() } }
     var horizonHours: Int { didSet { defaults.set(horizonHours, forKey: Keys.horizon) } }
-    var blendOfficialGuidance: Bool { didSet { defaults.set(blendOfficialGuidance, forKey: Keys.blend) } }
+    var blendOfficialGuidance: Bool { didSet { defaults.set(blendOfficialGuidance, forKey: Keys.blend); WidgetBridge.settingsChanged() } }
     var favoriteIDs: [String] { didSet { defaults.set(favoriteIDs, forKey: Keys.favorites); WidgetBridge.settingsChanged() } }
     /// Morning summary notification (off by default).
     var morningEnabled: Bool { didSet { defaults.set(morningEnabled, forKey: Keys.morningEnabled) } }

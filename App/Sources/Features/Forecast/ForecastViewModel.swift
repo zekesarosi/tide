@@ -15,52 +15,72 @@ final class ForecastViewModel {
     let station: Station
     private(set) var phase: Phase = .idle
     private(set) var result: ForecastResult?
-    private(set) var lastOptions: ForecastOptions?
     /// Set when a background refresh fails while an older forecast is shown.
     private(set) var refreshError: String?
 
-    /// Forecasts older than this are refreshed (in the background, over the
-    /// cached one) when the view appears.
-    static let staleAfter: TimeInterval = 2 * 60
-
     private let cache: ForecastCache
+    @ObservationIgnored private var subscription: ForecastSubscription?
+    @ObservationIgnored private var source: (repository: ForecastRepository, options: ForecastOptions)?
 
     /// Starts from this session's last forecast for the station, if any, so
     /// the screen draws immediately.
     init(station: Station, cache: ForecastCache? = nil) {
         self.station = station
+        // Resolved here, inside the main-actor init, not as a default argument.
         let cache = cache ?? .shared
         self.cache = cache
         if let r = cache.cached(station) {
             result = r
             phase = .loaded
         }
+        subscription = ForecastSubscription { [weak self] in self?.storeChanged() }
+    }
+
+    /// Another process (the widget) published a newer forecast for this
+    /// station: catch up, so this screen never shows older data than the
+    /// widget. Cheap: the widget's downloads are in the shared caches.
+    private func storeChanged() {
+        guard let source, phase != .loading,
+              let snap = AppGroup.snapshots.load(stationID: station.id),
+              snap.issued > (result?.forecast.issued ?? .distantPast) + 60 else { return }
+        Task { await load(source.repository, options: source.options, force: true) }
     }
 
     var forecast: WaterLevelForecast? { result?.forecast }
 
-    /// Show what's cached (memory, else disk) right away, then refresh if it
-    /// is stale or was built with other settings.
-    func loadIfNeeded(service: ForecastService, options: ForecastOptions) async {
-        if result == nil, let r = await cache.load(station), r.datum == expectedDatum(options) {
+    /// While the screen is up: show what's cached right away, then keep the
+    /// forecast current by `RefreshPolicy`, refetching only when it goes
+    /// stale. Between refreshes the screen re-evaluates it each minute
+    /// without recalculating. Ends when the calling task is cancelled.
+    func keepCurrent(_ repository: ForecastRepository, options: ForecastOptions) async {
+        source = (repository, options)
+        if let r = await cache.load(station), r.datum == expectedDatum(options), r.options == options || result == nil {
             result = r
-            lastOptions = nil   // unknown options: refresh below
             if phase != .loading { phase = .loaded }
         }
-        if let r = result, lastOptions == options, Date().timeIntervalSince(r.forecast.issued) < Self.staleAfter { return }
-        await load(service: service, options: options)
+        while !Task.isCancelled {
+            await load(repository, options: options)
+            let age = result.map { Date().timeIntervalSince($0.forecast.issued) } ?? 0
+            let lifetime = RefreshPolicy.lifetime(for: .app, liveObservations: result?.forecast.latestObservation != nil)
+            let wait = refreshError == nil ? max(lifetime - age, 60) : 120
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+        }
     }
 
-    func load(service: ForecastService, options: ForecastOptions) async {
+    /// Pull to refresh.
+    func refresh(_ repository: ForecastRepository, options: ForecastOptions) async {
+        await repository.service.api.clearCache(volatileOnly: true)
+        await load(repository, options: options, force: true)
+    }
+
+    private func load(_ repository: ForecastRepository, options: ForecastOptions, force: Bool = false) async {
         if phase == .loading { return }
+        let current = result.map { $0.options == options && RefreshPolicy.isCurrent($0.forecast, surface: .app) } ?? false
+        if current && !force { return }
         phase = .loading
         do {
-            let r = try await service.forecast(for: station, options: options)
-            result = r
+            result = try await repository.forecast(for: station, options: options, force: force)
             refreshError = nil
-            cache.store(r, for: station)
-            WidgetBridge.publish(r.forecast)
-            lastOptions = options
             phase = .loaded
         } catch is CancellationError {
             phase = result == nil ? .idle : .loaded
@@ -85,36 +105,36 @@ final class ForecastViewModel {
     }
 
     // MARK: Derived values for the UI
+    //
+    // Evaluated at the screen's clock, not at the forecast's issue time, so
+    // the reading and trend keep moving between refreshes and match the
+    // favorites cards and widgets (they all go through `Nowcast`).
 
-    /// Rising/falling based on the forecast total over the next 30 minutes.
-    var trendRising: Bool? {
-        guard let f = forecast, let now = f.total.value(at: f.issued + 60, maxGap: 7_200) ?? f.astronomical.value(at: f.issued),
-              let later = f.total.value(at: f.issued + 1_800, maxGap: 7_200) ?? f.astronomical.value(at: f.issued + 1_800) else { return nil }
-        return later > now
+    func trendRising(at now: Date) -> Bool? { forecast?.isRising(at: now) }
+
+    func nextEvents(after now: Date) -> [ForecastEvent] { forecast?.nextEvents(after: now) ?? [] }
+
+    /// The highest forecast high water from `now` to the horizon.
+    func peakEvent(after now: Date) -> ForecastEvent? {
+        forecast?.events.filter { $0.kind == .high && $0.date > now }.max { $0.total < $1.total }
     }
 
-    var nextEvents: [ForecastEvent] { Array((forecast?.events ?? []).prefix(2)) }
-
-    /// The highest forecast water level event over the horizon.
-    var peakEvent: ForecastEvent? { forecast?.events.filter { $0.kind == .high }.max { $0.total < $1.total } }
-
-    /// The water level to headline: a recent observation, else the forecast now.
-    var reading: (value: Double, observed: Bool, date: Date)? {
-        guard let f = forecast else { return nil }
-        if let o = f.latestObservation, f.issued.timeIntervalSince(o.date) < 3 * 3_600 { return (o.value, true, o.date) }
-        if let v = f.total.value(at: f.issued, maxGap: 7_200) ?? f.astronomical.value(at: f.issued) { return (v, false, f.issued) }
-        return nil
+    /// The water level to headline at `now`, and whether a recent gauge reading backs it.
+    func reading(at now: Date) -> (value: Double, observed: Bool)? {
+        guard let f = forecast, let v = f.level(at: now) else { return nil }
+        return (v, f.isObserved(at: now))
     }
 
-    /// Water above (+) or below (−) the tide table right now.
-    var anomalyNow: Double? { forecast?.currentResidual?.value ?? forecast?.surge.first?.surge }
+    /// Water above (+) or below (−) the tide table: the latest measured
+    /// anomaly, else the forecast surge at `now`.
+    func anomaly(at now: Date) -> Double? { forecast?.currentResidual?.value ?? forecast?.surgePoint(at: now)?.surge }
 
-    /// Surge components for the hour closest to now.
-    var componentsNow: SurgeForecastPoint? { forecast?.surge.first }
+    /// Surge components for the hour containing `now`.
+    func components(at now: Date) -> SurgeForecastPoint? { forecast?.surgePoint(at: now) }
 
     /// One sentence on what is driving the anomaly.
-    var driverSentence: String? {
-        guard let c = componentsNow else { return nil }
+    func driverSentence(at now: Date) -> String? {
+        guard let c = components(at: now) else { return nil }
         let weather = c.pressureComponent + c.windComponent
         let background = c.offsetComponent
         if abs(background) >= abs(weather) {

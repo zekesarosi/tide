@@ -53,6 +53,38 @@ final class SnapshotTests: XCTestCase {
         XCTAssertLessThan(abs(gap4), 0.01)
     }
 
+    /// The app evaluates the full forecast and the widget its snapshot; at
+    /// any moment they must show the same level, trend and next tide.
+    func testFullForecastAndSnapshotAgreeAtAnyTime() throws {
+        let f = ForecastSnapshot.sampleForecast(now: now)
+        let s = ForecastSnapshot(forecast: f)
+        for minutes in stride(from: -60, through: 24 * 60, by: 37) {
+            let t = now + Double(minutes) * 60
+            let a = try XCTUnwrap(f.level(at: t)), b = try XCTUnwrap(s.level(at: t))
+            XCTAssertEqual(a, b, accuracy: 0.01, "level at +\(minutes) min")
+            if abs(a - (f.level(at: t + 600) ?? a)) > 0.005 {
+                XCTAssertEqual(f.isRising(at: t), s.isRising(at: t), "trend at +\(minutes) min")
+            }
+            XCTAssertEqual(f.nextEvents(after: t, limit: 1).first?.date, s.nextEvents(after: t, limit: 1).first?.date)
+        }
+    }
+
+    /// App and widget both write; an older forecast finishing later must not
+    /// replace a newer one.
+    func testStoreKeepsTheNewestSnapshot() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ForecastSnapshotStore(directory: dir)
+        let newer = ForecastSnapshot.sample(now: now)
+        let older = ForecastSnapshot.sample(now: now - 1_800)
+        XCTAssertTrue(try store.save(newer))
+        XCTAssertFalse(try store.save(older))
+        XCTAssertEqual(store.load(stationID: newer.stationID)?.issued, newer.issued)
+        let newest = ForecastSnapshot.sample(now: now + 600)
+        XCTAssertTrue(try store.save(newest))
+        XCTAssertEqual(store.load(stationID: newer.stationID)?.issued, newest.issued)
+    }
+
     func testStoreRoundTripsIncludingNaNGaps() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }

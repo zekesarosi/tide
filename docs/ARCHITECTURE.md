@@ -130,29 +130,49 @@ high tide:
 P(reach category) = 1 − Φ((threshold − total) / σ)
 ```
 
-## Widgets
+## Keeping the app and widgets in step
 
-The app and the widget extension share an App Group (`group.<bundle id>`) and
-a Keychain access group (`<team>.<bundle id>.shared`):
+A forecast is computed once and then evaluated at whatever time a surface needs.
+The tide itself is local math (harmonic constants → `HarmonicPredictor`); what
+goes stale is the inputs: gauge readings every 6 minutes, the weather model about
+hourly, the reference data (harmonic constants, datums, flood levels) almost never.
 
-* **App side.** After every forecast load, the app saves a `ForecastSnapshot` to
-  the group container and reloads widget timelines. The snapshot is a compact copy
-  of the forecast: 12 h back to 48 h ahead on a 30-minute grid, with σ, the
-  predicted tide, the latest observation, events with flood probabilities, the
-  thresholds and alert titles.
-* **Station list and settings.** The app also writes the station catalog and the
-  user's settings (units, datum, favorites) to the group, so the widget's station
-  picker (an App Intents `EntityStringQuery`) works offline.
-* **Widget timelines.** The `AppIntentTimelineProvider` makes entries
-  15 minutes apart from one snapshot, so the "now" marker, level and trend move
-  without network access.
-* **When the widget fetches.** If the snapshot is older than 45 minutes, in a
-  different datum, or the user pressed the widget's refresh button (an interactive
-  App Intent), the widget runs TideKit's normal `ForecastService` pipeline itself,
-  with a 48 h horizon and a 25 s timeout (cancellation reaches in-flight requests).
-  It falls back to the saved snapshot on failure, backs off for 45 minutes before
-  fetching again, and asks for a new timeline after 30 minutes (60 after a failure).
-  Entries cover up to 12 hours, so the widget keeps moving if reloads are throttled.
+* **One rule for "now".** `Nowcast.level(at:)` (TideKit) is the water level at any
+  time: the forecast, anchored to the latest gauge reading and easing back onto the
+  forecast over about an hour. `WaterLevelForecast` (station screen) and
+  `ForecastSnapshot` (favorites cards, widgets) both use it, so they agree whenever
+  they show the same moment. The station screen runs on a minute-by-minute
+  `TimelineView` and passes that time down (`\.forecastNow`); nothing uses the
+  forecast's issue time as "now".
+* **One freshness rule.** `RefreshPolicy` says how long a forecast stays current:
+  6 minutes in the app and 20 in the widget for stations with live readings, an hour
+  for stations without. Between refreshes nothing is recalculated.
+* **One way to fetch, in the app.** `ForecastRepository` returns the cached forecast
+  while it's current, shares one fetch between concurrent callers (station screen,
+  favorites, morning summary), and puts every fresh forecast in the cache and the
+  shared store.
+* **One shared store.** Both processes publish through `ForecastPublisher`: a
+  `ForecastSnapshot` per station in the App Group (12 h back to 48 h ahead on a
+  30-minute grid), saved only if it's newer than what's there (coordinated across
+  processes), then a Darwin notification. The app's favorites and an open station
+  screen pick up the widget's newer data from that signal. Snapshots record the datum
+  and blend setting; a reader refetches one built with other settings.
+* **Shared download caches.** Both processes build their `ForecastService` with
+  `AppGroup.makeService()`: a `DiskResponseCache` keeps responses valid for 15 minutes
+  or more (reference data, tide-table predictions, the weather run, storms), and an
+  `ObservationArchive` keeps the month of gauge readings the surge model trains on,
+  so a refresh downloads only the readings since the last one (with a 2-hour overlap
+  for late and revised readings). Requests are shaped to repeat: the weather request
+  always covers the full 16-day model range, and DFO tide-table requests cover whole
+  UTC days. Pull to refresh drops the short-lived entries and keeps the reference data.
+* **Widget timelines.** Entries 15 minutes apart from one snapshot, covering up to
+  12 hours, so the widget keeps moving if reloads are throttled. The next reload is
+  when the snapshot stops being current. The widget fetches (48 h horizon, the app's
+  datum and blend setting, 25 s timeout) when its snapshot isn't current or was built
+  with other settings, or when the refresh button is pressed; it backs off for 30
+  minutes after a failure.
+* **Station list and settings.** The app writes the station catalog and the user's
+  settings to the group, so the widget's station picker works offline.
 * **Deep links.** Tapping a widget opens `tideforecast://station/<id>`.
 
 ## Networking and auth (`APIClient`)
@@ -166,7 +186,8 @@ a Keychain access group (`<team>.<bundle id>.shared`):
   honouring `Retry-After`. 401 and 403 are not retried.
 * **Pacing.** Requests to the same host are spaced out for providers with published limits.
 * **Caching and redaction.** Identical concurrent requests are coalesced, and a TTL cache
-  is keyed on the redacted URL.
+  is keyed on the redacted URL: in memory, and on disk in the App Group for entries
+  valid 15 minutes or more (see above).
 
 ## Known limitations
 

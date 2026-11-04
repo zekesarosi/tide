@@ -12,6 +12,8 @@ struct DayForecastView: View {
     let tz: TimeZone
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.forecastNow) private var forecastNow
+    private var now: Date { forecastNow ?? Date() }
 
     struct Hour: Identifiable {
         var id: Date { date }
@@ -137,7 +139,6 @@ struct DayForecastView: View {
 
     private var dayChart: some View {
         let s = samples
-        let now = forecast.issued
         return Chart {
             ForEach(Array(s.band.enumerated()), id: \.offset) { _, b in
                 AreaMark(x: .value("Time", b.0), yStart: .value("Low", b.1), yEnd: .value("High", b.2))
@@ -206,7 +207,7 @@ struct DayForecastView: View {
     }
 
     private func row(_ h: Hour) -> some View {
-        let isNow = abs(h.date.timeIntervalSince(forecast.issued)) < 1_800
+        let isNow = abs(h.date.timeIntervalSince(now)) < 1_800
         return HStack {
             HStack(spacing: 6) {
                 if let rising = h.rising {

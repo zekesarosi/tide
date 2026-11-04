@@ -50,11 +50,13 @@ struct HighestWaterSection: View {
     let peak: ForecastEvent?
     let unit: LengthUnit
     let tz: TimeZone
+    @Environment(\.forecastNow) private var forecastNow
+    private var now: Date { forecastNow ?? Date() }
 
     var body: some View {
         if let peak {
             (Text("Highest water ") + Text(Fmt.length(peak.total, unit)).fontWeight(.semibold)
-                + Text(" \(Fmt.dayName(peak.date, in: tz, relativeTo: forecast.issued).lowercasedIfToday) at \(Fmt.time(peak.date, in: tz))")
+                + Text(" \(Fmt.dayName(peak.date, in: tz, relativeTo: now).lowercasedIfToday) at \(Fmt.time(peak.date, in: tz))")
                 + Text(", likely \(Fmt.length(peak.lower80, unit))–\(Fmt.length(peak.upper80, unit)).")
                 + Text(forecast.weatherHorizon.map { peak.date > $0 } == true ? " Long-range outlook: tide table plus typical surge." : ""))
                 .font(.body)
@@ -144,13 +146,15 @@ struct AllTidesView: View {
     let forecast: WaterLevelForecast
     let unit: LengthUnit
     let tz: TimeZone
+    @Environment(\.forecastNow) private var forecastNow
+    private var now: Date { forecastNow ?? Date() }
 
     private var days: [(day: String, events: [ForecastEvent])] {
         var cal = Calendar.current
         cal.timeZone = tz
         let groups = Dictionary(grouping: forecast.events) { cal.startOfDay(for: $0.date) }
         return groups.keys.sorted().map { key in
-            (Fmt.dayName(key, in: tz, relativeTo: forecast.issued), groups[key]!.sorted { $0.date < $1.date })
+            (Fmt.dayName(key, in: tz, relativeTo: now), groups[key]!.sorted { $0.date < $1.date })
         }
     }
 

@@ -9,6 +9,8 @@ final class AppEnvironment {
     let identity: AppIdentity
     let credentials: CredentialStore
     let service: ForecastService
+    /// Every forecast the app shows comes through here.
+    let forecasts: ForecastRepository
     let settings: AppSettings
     let stations: StationStore
     let location: LocationProvider
@@ -24,11 +26,12 @@ final class AppEnvironment {
         // defaults injected via Config/Secrets.xcconfig → Info.plist.
         // The Keychain access group is shared with the widget extension.
         credentials = AppGroup.credentials()
-        service = ForecastService(api: APIClient(identity: identity, credentials: credentials))
+        service = AppGroup.makeService(identity: identity, credentials: credentials)
+        forecasts = ForecastRepository(service: service)
         settings = AppSettings()
         stations = StationStore()
         location = LocationProvider()
-        morning = MorningNotifier(service: service, settings: settings, stations: stations, router: router)
+        morning = MorningNotifier(forecasts: forecasts, settings: settings, stations: stations, router: router)
     }
 
     /// True when the NWS-required contact has not been set in Config/App.xcconfig.

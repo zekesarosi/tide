@@ -31,6 +31,8 @@ public struct ForecastResult: Sendable, Hashable, Codable {
     /// Datum actually used (may differ from the request, e.g. Great Lakes use IGLD).
     public var datum: TidalDatum
     public var datums: DatumSet?
+    /// The options it was built with (nil in results cached by older versions).
+    public var options: ForecastOptions? = nil
 }
 
 /// Fetches everything a forecast needs, in parallel, tolerating failures of
@@ -44,9 +46,12 @@ public final class ForecastService: Sendable {
     public let openMeteo: OpenMeteoClient
     public let dfo: DFOIWLSClient
     public let admiralty: AdmiraltyClient
+    /// Recent gauge records, so refreshes fetch only new readings (nil: fetch the whole window each time).
+    public let observations: ObservationArchive?
 
-    public init(api: APIClient) {
+    public init(api: APIClient, observations: ObservationArchive? = nil) {
         self.api = api
+        self.observations = observations
         coops = NOAACoopsClient(api: api)
         nws = NWSAlertsClient(api: api)
         nwps = NWPSClient(api: api)
@@ -78,20 +83,25 @@ public final class ForecastService: Sendable {
     // MARK: Forecast
 
     public func forecast(for station: Station, options: ForecastOptions = .init(), now: Date = Date()) async throws -> ForecastResult {
+        var result: ForecastResult
         switch station.source {
-        case .noaaCoops: return try await noaaForecast(station, options, now)
-        case .dfoIWLS: return try await dfoForecast(station, options, now)
-        case .ukAdmiralty: return try await ukForecast(station, options, now)
+        case .noaaCoops: result = try await noaaForecast(station, options, now)
+        case .dfoIWLS: result = try await dfoForecast(station, options, now)
+        case .ukAdmiralty: result = try await ukForecast(station, options, now)
         default: throw APIError.misconfigured("Unsupported station source \(station.source.rawValue)")
         }
+        result.options = options
+        return result
     }
 
     private func sharedContext(_ station: Station, _ options: ForecastOptions, _ now: Date) async
         -> (forcing: [MetSample]?, alerts: [WeatherAlert]?, storms: [TropicalCyclone]?, sources: [SourceStatus]) {
-        let days = Int((Double(options.horizonHours) / 24).rounded(.up)) + 1
+        // Always the full weather-model range: the same request whatever the
+        // horizon, so the app and widget share one cached copy per model run.
+        // (Beyond 16 days the forecast is the outlook, which needs no weather.)
         async let forcing = Self.capture(.openMeteo, "pressure & wind") {
             try await self.openMeteo.forcing(latitude: station.latitude, longitude: station.longitude,
-                                             pastDays: TotalWaterLevelForecaster.trainingDays + 3, forecastDays: days)
+                                             pastDays: TotalWaterLevelForecaster.trainingDays + 3, forecastDays: 16)
         }
         // NWS alerts cover US locations only.
         let isUS = station.source == .noaaCoops
@@ -112,7 +122,9 @@ public final class ForecastService: Sendable {
         async let datums = Self.capture(.noaaCoops, "datums") { try await self.coops.datums(station: code) }
         async let flood = Self.capture(.noaaCoops, "flood thresholds") { try await self.coops.floodThresholds(station: code) }
         async let obs = Self.capture(.noaaCoops, "observations") {
-            try await self.coops.observedWaterLevels(station: code, from: obsStart, to: now, datum: datum)
+            try await self.observed(key: "\(station.id)|\(datum.rawValue)", from: obsStart, to: now) { a, b in
+                try await self.coops.observedWaterLevels(station: code, from: a, to: b, datum: datum)
+            }
         }
         async let official = (options.blendOfficialGuidance && station.nwsLID != nil)
             ? Self.capture(.nwps, "official forecast") { try await self.nwps.forecast(lid: station.nwsLID!) }
@@ -160,11 +172,21 @@ public final class ForecastService: Sendable {
         let id = station.code
         let horizon = now + Double(options.horizonHours + 12) * 3_600
         let start = now - Double(TotalWaterLevelForecaster.trainingDays + 2) * 86_400
-        async let pred = Self.capture(.dfoIWLS, "predictions") { try await self.dfo.series(.predicted, stationID: id, from: start, to: horizon) }
+        // The tide table doesn't change: request whole UTC days so the same
+        // request (and its day-long cache entry) serves every refresh that day.
+        let predFrom = Self.utcDay(start), predTo = Self.utcDay(horizon) + 86_400
+        // The official forecast is reissued a few times a day: hour-aligned requests.
+        let hourNow = (now.timeIntervalSince1970 / 3_600).rounded(.down) * 3_600
+        let fcFrom = Date(timeIntervalSince1970: hourNow - 86_400), fcTo = Date(timeIntervalSince1970: (horizon.timeIntervalSince1970 / 3_600).rounded(.up) * 3_600)
+        async let pred = Self.capture(.dfoIWLS, "predictions") { try await self.dfo.series(.predicted, stationID: id, from: predFrom, to: predTo) }
         async let obs = station.capabilities.contains(.observations)
-            ? Self.capture(.dfoIWLS, "observations") { try await self.dfo.series(.observed, stationID: id, from: start, to: now) } : (nil, nil)
+            ? Self.capture(.dfoIWLS, "observations") {
+                try await self.observed(key: station.id, from: start, to: now) { a, b in
+                    try await self.dfo.series(.observed, stationID: id, from: a, to: b)
+                }
+            } : (nil, nil)
         async let fc = (options.blendOfficialGuidance && station.capabilities.contains(.officialForecast))
-            ? Self.capture(.dfoIWLS, "official forecast") { try await self.dfo.series(.forecast, stationID: id, from: now - 86_400, to: horizon) } : (nil, nil)
+            ? Self.capture(.dfoIWLS, "official forecast") { try await self.dfo.series(.forecast, stationID: id, from: fcFrom, to: fcTo) } : (nil, nil)
         async let ctx = sharedContext(station, options, now)
 
         let (p, ps) = await pred, (o, os) = await obs, (f, fs) = await fc
@@ -193,6 +215,17 @@ public final class ForecastService: Sendable {
                                    observations: .empty, forcing: context.forcing ?? [], storms: context.storms ?? [])
         let sources = [SourceStatus(source: .ukAdmiralty, component: "tidal events", ok: true, message: nil)] + context.sources
         return ForecastResult(forecast: TotalWaterLevelForecaster.forecast(input), sources: sources, datum: .chartDatum, datums: nil)
+    }
+
+    /// Observations over `from...to`, incrementally when an archive is configured.
+    private func observed(key: String, from: Date, to: Date,
+                          fetch: @escaping @Sendable (Date, Date) async throws -> TimeSeries) async throws -> TimeSeries {
+        guard let observations else { return try await fetch(from, to) }
+        return try await observations.series(key: key, from: from, to: to, fetch: fetch)
+    }
+
+    static func utcDay(_ d: Date) -> Date {
+        Date(timeIntervalSince1970: (d.timeIntervalSince1970 / 86_400).rounded(.down) * 86_400)
     }
 
     /// Run an optional fetch, converting failure into a status entry.

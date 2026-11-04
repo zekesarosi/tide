@@ -18,15 +18,15 @@ final class MorningNotifier: NSObject, UNUserNotificationCenterDelegate {
     /// Rescheduling on foreground is skipped if done more recently than this.
     static let foregroundInterval: TimeInterval = 60 * 60
 
-    private let service: ForecastService
+    private let forecasts: ForecastRepository
     private let settings: AppSettings
     private let stations: StationStore
     private let router: AppRouter
     private var lastScheduled: Date?
     private var center: UNUserNotificationCenter { .current() }
 
-    init(service: ForecastService, settings: AppSettings, stations: StationStore, router: AppRouter) {
-        self.service = service
+    init(forecasts: ForecastRepository, settings: AppSettings, stations: StationStore, router: AppRouter) {
+        self.forecasts = forecasts
         self.settings = settings
         self.stations = stations
         self.router = router
@@ -52,7 +52,9 @@ final class MorningNotifier: NSObject, UNUserNotificationCenterDelegate {
         await reschedule()
     }
 
-    /// Replace the pending summaries with ones built from a fresh forecast.
+    /// Replace the pending summaries with ones built from a current forecast:
+    /// the one the app already has if it's recent enough, else a fresh one
+    /// (which also updates the station screen, favorites and widgets).
     /// Leaves the existing ones in place if the forecast can't be fetched.
     func reschedule() async {
         guard settings.morningEnabled, let id = settings.morningStationOrFirstFavorite, let station = station(id: id),
@@ -61,7 +63,7 @@ final class MorningNotifier: NSObject, UNUserNotificationCenterDelegate {
             BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.taskID)
             return
         }
-        guard let result = try? await service.forecast(for: station, options: settings.forecastOptions) else {
+        guard let result = try? await forecasts.forecast(for: station, options: settings.forecastOptions, surface: .widget) else {
             scheduleBackgroundRefresh()
             return
         }

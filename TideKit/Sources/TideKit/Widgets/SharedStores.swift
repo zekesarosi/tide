@@ -12,21 +12,40 @@ public struct ForecastSnapshotStore: Sendable {
         return directory.appendingPathComponent("snapshot-\(String(safe)).json")
     }
 
-    public func save(_ snapshot: ForecastSnapshot) throws {
+    /// Save `snapshot` unless the store already holds a newer one for the
+    /// station. The app and the widget extension both write here, so the
+    /// check and the write are coordinated across processes: the newest
+    /// forecast always wins, whoever finished last. Returns whether it was saved.
+    @discardableResult
+    public func save(_ snapshot: ForecastSnapshot) throws -> Bool {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         // NaN marks gaps in the curves; encode it explicitly.
         encoder.nonConformingFloatEncodingStrategy = .convertToString(positiveInfinity: "inf", negativeInfinity: "-inf", nan: "nan")
-        try encoder.encode(snapshot).write(to: url(for: snapshot.stationID), options: .atomic)
+        let data = try encoder.encode(snapshot)
+        var coordinationError: NSError?
+        var outcome: Result<Bool, Error> = .success(false)
+        NSFileCoordinator().coordinate(writingItemAt: url(for: snapshot.stationID), options: .forReplacing,
+                                       error: &coordinationError) { target in
+            if let existing = Self.decode(at: target), existing.issued > snapshot.issued {
+                outcome = .success(false)
+                return
+            }
+            outcome = Result { try data.write(to: target, options: .atomic); return true }
+        }
+        if let coordinationError { throw coordinationError }
+        return try outcome.get()
     }
 
-    public func load(stationID: String) -> ForecastSnapshot? {
-        guard let data = try? Data(contentsOf: url(for: stationID)) else { return nil }
+    static func decode(at url: URL) -> ForecastSnapshot? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
         let decoder = JSONDecoder()
         decoder.nonConformingFloatDecodingStrategy = .convertFromString(positiveInfinity: "inf", negativeInfinity: "-inf", nan: "nan")
         guard let s = try? decoder.decode(ForecastSnapshot.self, from: data), s.version == ForecastSnapshot.currentVersion else { return nil }
         return s
     }
+
+    public func load(stationID: String) -> ForecastSnapshot? { Self.decode(at: url(for: stationID)) }
 
     public func remove(stationID: String) {
         try? FileManager.default.removeItem(at: url(for: stationID))

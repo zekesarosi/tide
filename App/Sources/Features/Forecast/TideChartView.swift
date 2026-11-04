@@ -14,6 +14,8 @@ struct TideLineChart: View {
     let forecast: WaterLevelForecast
     let unit: LengthUnit
     let tz: TimeZone
+    /// The screen's clock: where the now dot sits and presets start.
+    let now: Date
 
     enum Window: String, CaseIterable, Identifiable {
         case day = "Day", twoDays = "2 days", week = "Week", month = "Month"
@@ -26,13 +28,14 @@ struct TideLineChart: View {
     @State private var store = ChartDataStore()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(forecast: WaterLevelForecast, unit: LengthUnit, tz: TimeZone) {
+    init(forecast: WaterLevelForecast, unit: LengthUnit, tz: TimeZone, now: Date) {
         self.forecast = forecast
         self.unit = unit
         self.tz = tz
+        self.now = now
         _viewport = State(initialValue: ChartViewport(
             bounds: Self.domain(forecast), window: .day,
-            start: Self.homeStart(.day, forecast: forecast, tz: tz).timeIntervalSince1970,
+            start: Self.homeStart(.day, now: now, tz: tz).timeIntervalSince1970,
             length: Self.presetLength(.day)))
     }
 
@@ -90,8 +93,7 @@ struct TideLineChart: View {
 
     /// Where each preset starts: today from midnight (late in the day,
     /// keeping the next few hours in view), longer ones from a little before now.
-    static func homeStart(_ w: Window, forecast: WaterLevelForecast, tz: TimeZone) -> Date {
-        let now = forecast.issued
+    static func homeStart(_ w: Window, now: Date, tz: TimeZone) -> Date {
         switch w {
         case .day:
             var c = Calendar.current
@@ -103,17 +105,17 @@ struct TideLineChart: View {
         }
     }
 
-    private func home(_ w: Window) -> Double { Self.homeStart(w, forecast: forecast, tz: tz).timeIntervalSince1970 }
+    private func home(_ w: Window) -> Double { Self.homeStart(w, now: now, tz: tz).timeIntervalSince1970 }
 
     // MARK: Body
 
     var body: some View {
         let data = store.data(forecast: forecast, unit: unit, tz: tz)
         VStack(alignment: .leading, spacing: 10) {
-            TideCanvas(data: data, viewport: viewport, forecast: forecast, unit: unit, tz: tz, reduceMotion: reduceMotion)
+            TideCanvas(data: data, viewport: viewport, forecast: forecast, unit: unit, tz: tz, now: now, reduceMotion: reduceMotion)
                 .frame(height: 210)
 
-            ChartFooter(data: data, viewport: viewport, forecast: forecast, unit: unit, tz: tz,
+            ChartFooter(data: data, viewport: viewport, forecast: forecast, unit: unit, tz: tz, now: now,
                         home: home, reduceMotion: reduceMotion)
                 .padding(.horizontal, Theme.margin)
                 .frame(minHeight: 18, alignment: .leading)
@@ -362,8 +364,6 @@ final class ChartData {
     let yLo: Double
     let yHi: Double
     let tags: [Tag]
-    let now: Double
-    let nowLevel: Double?
     let outlook: Double?
     private var tickLabels: [Double: String] = [:]
 
@@ -383,14 +383,6 @@ final class ChartData {
         table = ChartLine(f.astronomical, unit)
         cut = f.total.first?.date.timeIntervalSince1970 ?? f.issued.timeIntervalSince1970
         water = observed.prefix(before: cut) + forecast
-        now = f.issued.timeIntervalSince1970
-        if let v = f.total.value(at: f.issued, maxGap: 3_600) {
-            nowLevel = unit.fromMeters(v)
-        } else if let o = f.observed.last, f.issued.timeIntervalSince(o.date) < 3_600 {
-            nowLevel = unit.fromMeters(o.value)
-        } else {
-            nowLevel = nil
-        }
         outlook = f.weatherHorizon.flatMap { $0 < f.horizon - 3_600 ? $0.timeIntervalSince1970 : nil }
         let all = water.v + table.v + lower.v + upper.v
         let lo = all.min() ?? 0, hi = all.max() ?? 1
@@ -511,7 +503,10 @@ final class ChartData {
 extension ChartData {
     private enum Thin { case envelope, max, min }
 
-    func draw(_ ctx: inout GraphicsContext, size: CGSize, start: Double, length: Double, selection: Double?) {
+    /// `now` and `nowLevel` come from the screen's clock rather than the
+    /// cached data, so the dot keeps moving without rebuilding the series.
+    func draw(_ ctx: inout GraphicsContext, size: CGSize, start: Double, length: Double, selection: Double?,
+              now: Double, nowLevel: Double?) {
         let w = size.width
         let plotH = size.height - Self.axisHeight
         guard w > 1, plotH > 1, length > 0 else { return }
@@ -769,12 +764,14 @@ private struct TideCanvas: View {
     let forecast: WaterLevelForecast
     let unit: LengthUnit
     let tz: TimeZone
+    let now: Date
     let reduceMotion: Bool
 
     var body: some View {
         let start = viewport.start, length = viewport.length, selection = viewport.selection
+        let t = now.timeIntervalSince1970, level = forecast.level(at: now).map(unit.fromMeters)
         Canvas { ctx, size in
-            data.draw(&ctx, size: size, start: start, length: length, selection: selection)
+            data.draw(&ctx, size: size, start: start, length: length, selection: selection, now: t, nowLevel: level)
         }
         .overlay(ChartGestureLayer(viewport: viewport))
         .accessibilityElement(children: .ignore)
@@ -810,12 +807,13 @@ private struct ChartFooter: View {
     let forecast: WaterLevelForecast
     let unit: LengthUnit
     let tz: TimeZone
+    let now: Date
     let home: (TideLineChart.Window) -> Double
     let reduceMotion: Bool
 
     var body: some View {
-        let start = viewport.start, length = viewport.length
-        let away = viewport.canPan && !(start...(start + length)).contains(data.now)
+        let start = viewport.start, length = viewport.length, now = now.timeIntervalSince1970
+        let away = viewport.canPan && !(start...(start + length)).contains(now)
         HStack(spacing: 8) {
             if let s = viewport.selection {
                 SelectionReadout(forecast: forecast, date: Date(timeIntervalSince1970: s), unit: unit, tz: tz)
@@ -830,10 +828,10 @@ private struct ChartFooter: View {
             if away {
                 Button {
                     let w = viewport.window
-                    let target = abs(length - TideLineChart.presetLength(w)) < 60 ? home(w) : data.now - length * 0.25
+                    let target = abs(length - TideLineChart.presetLength(w)) < 60 ? home(w) : now - length * 0.25
                     viewport.animate(toStart: target, length: length, duration: reduceMotion ? 0 : 0.45)
                 } label: {
-                    Label("Now", systemImage: data.now < start ? "chevron.left" : "chevron.right")
+                    Label("Now", systemImage: now < start ? "chevron.left" : "chevron.right")
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
@@ -1035,6 +1033,8 @@ struct SurgeChartView: View {
     let forecast: WaterLevelForecast
     let unit: LengthUnit
     let tz: TimeZone
+    @Environment(\.forecastNow) private var forecastNow
+    private var now: Date { forecastNow ?? Date() }
 
     private static let colors: [Color] = [Theme.swellBand.opacity(0.24), Theme.harbor, Theme.swell, Theme.inkSecondary]
 
@@ -1067,7 +1067,7 @@ struct SurgeChartView: View {
                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [1, 3]))
             }
             RuleMark(y: .value("Tide table", 0.0)).foregroundStyle(Theme.tideTable.opacity(0.6))
-            RuleMark(x: .value("Now", forecast.issued)).foregroundStyle(Theme.ink.opacity(0.18))
+            RuleMark(x: .value("Now", now)).foregroundStyle(Theme.ink.opacity(0.18))
         }
         .chartForegroundStyleScale(domain: ["Range", "Observed", "Forecast", "NWS official"], range: Self.colors)
         .chartYAxisLabel(unit.symbol)

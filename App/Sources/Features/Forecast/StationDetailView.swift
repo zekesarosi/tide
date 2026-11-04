@@ -18,11 +18,20 @@ struct StationDetailView: View {
     private var unit: LengthUnit { settings.unit }
 
     var body: some View {
+        // One clock for the whole screen: the forecast is evaluated at the
+        // current minute, not at when it was fetched.
+        TimelineView(.everyMinute) { context in
+            screen(now: context.date)
+                .environment(\.forecastNow, context.date)
+        }
+    }
+
+    private func screen(now: Date) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 header
                 if let f = model.forecast {
-                    content(f)
+                    content(f, now: now)
                 } else if case .failed(let message) = model.phase {
                     ContentUnavailableView {
                         Label("Forecast unavailable", systemImage: "wifi.exclamationmark")
@@ -64,13 +73,12 @@ struct StationDetailView: View {
         }
         .refreshable { await reload() }
         .task(id: settings.forecastOptions) {
-            await model.loadIfNeeded(service: env.service, options: settings.forecastOptions)
+            await model.keepCurrent(env.forecasts, options: settings.forecastOptions)
         }
     }
 
     private func reload() async {
-        await env.service.api.clearCache()
-        await model.load(service: env.service, options: settings.forecastOptions)
+        await model.refresh(env.forecasts, options: settings.forecastOptions)
     }
 
     // MARK: Header
@@ -107,23 +115,23 @@ struct StationDetailView: View {
     // MARK: Content
 
     @ViewBuilder
-    private func content(_ f: WaterLevelForecast) -> some View {
+    private func content(_ f: WaterLevelForecast, now: Date) -> some View {
         if !f.nearbyStorms.isEmpty || !f.alerts.isEmpty {
             callouts(f)
                 .padding(.horizontal, Theme.margin)
                 .padding(.top, 14)
         }
 
-        hero(f)
+        hero(f, now: now)
             .padding(.horizontal, Theme.margin)
             .padding(.top, 18)
 
-        TideLineChart(forecast: f, unit: unit, tz: tz)
+        TideLineChart(forecast: f, unit: unit, tz: tz, now: now)
             .padding(.top, 14)
 
         VStack(alignment: .leading, spacing: 12) {
             SectionLabel("Next tides")
-            NextTidesGrid(events: f.events, unit: unit, tz: tz, now: f.issued)
+            NextTidesGrid(events: f.events, unit: unit, tz: tz, now: now)
             NavigationLink {
                 AllTidesView(forecast: f, unit: unit, tz: tz)
             } label: {
@@ -147,16 +155,16 @@ struct StationDetailView: View {
         .padding(.top, Theme.sectionGap)
 
         VStack(alignment: .leading, spacing: 12) {
-            SectionLabel("Highest water · \(Int((f.horizon.timeIntervalSince(f.issued) / 86_400).rounded())) days")
-            HighestWaterSection(forecast: f, peak: model.peakEvent, unit: unit, tz: tz)
+            SectionLabel("Highest water · \(Int((f.horizon.timeIntervalSince(now) / 86_400).rounded())) days")
+            HighestWaterSection(forecast: f, peak: model.peakEvent(after: now), unit: unit, tz: tz)
         }
         .padding(.horizontal, Theme.margin)
         .padding(.top, 18)
 
-        if let point = model.componentsNow {
+        if let point = model.components(at: now) {
             VStack(alignment: .leading, spacing: 12) {
-                SectionLabel((model.anomalyNow ?? point.surge) >= 0 ? "Why the water is high" : "Why the water is low")
-                if let sentence = model.driverSentence {
+                SectionLabel((model.anomaly(at: now) ?? point.surge) >= 0 ? "Why the water is high" : "Why the water is low")
+                if let sentence = model.driverSentence(at: now) {
                     Text(sentence).font(.subheadline).foregroundStyle(Theme.ink)
                 }
                 DriverBars(point: point, unit: unit)
@@ -207,10 +215,10 @@ struct StationDetailView: View {
         }
     }
 
-    @ViewBuilder
-    private func hero(_ f: WaterLevelForecast) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let r = model.reading {
+    private func hero(_ f: WaterLevelForecast, now: Date) -> some View {
+        let rising = model.trendRising(at: now)
+        return VStack(alignment: .leading, spacing: 10) {
+            if let r = model.reading(at: now) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(number(r.value))
                         .font(.reading(76))
@@ -223,12 +231,12 @@ struct StationDetailView: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(Fmt.length(r.value, unit)) \(r.observed ? "observed" : "predicted")")
 
-                if let next = f.events.first {
+                if let next = model.nextEvents(after: now).first {
                     HStack(spacing: 8) {
-                        if let rising = model.trendRising { TrendArrow(rising: rising) }
-                        (Text("\(model.trendRising.map { $0 ? "Rising · " : "Falling · " } ?? "Next ")\(Phrase.eventName(next.kind).lowercased()) ")
+                        if let rising { TrendArrow(rising: rising) }
+                        (Text("\(rising.map { $0 ? "Rising · " : "Falling · " } ?? "Next ")\(Phrase.eventName(next.kind).lowercased()) ")
                             + Text(Fmt.length(next.total, unit)).fontWeight(.semibold)
-                            + Text(" at \(Fmt.smartTime(next.date, in: tz, relativeTo: f.issued))"))
+                            + Text(" at \(Fmt.smartTime(next.date, in: tz, relativeTo: now))"))
                             .font(.callout)
                     }
                 }
@@ -237,7 +245,7 @@ struct StationDetailView: View {
                         .font(.footnote).foregroundStyle(Theme.inkSecondary)
                 }
             }
-            if let a = model.anomalyNow {
+            if let a = model.anomaly(at: now) {
                 Chip(text: Phrase.anomaly(a, unit), style: a >= 0.03 ? .swell : (a <= -0.03 ? .harbor : .neutral))
             }
         }

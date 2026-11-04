@@ -19,13 +19,8 @@ struct TideEntry: TimelineEntry {
 /// datum, it fetches a fresh 48-hour forecast with TideKit, the same
 /// pipeline the app uses.
 struct TideProvider: AppIntentTimelineProvider {
-    /// Fetch a new forecast when the saved one is older than this. NOAA
-    /// gauges report every 6 minutes; 20 minutes keeps the widget close to
-    /// the app without spending the daily reload budget (~72 a day at most,
-    /// and WidgetKit spaces reloads out further when the widget isn't seen).
-    static let maxAge: TimeInterval = 20 * 60
-    /// How soon to ask WidgetKit for the next reload, after a good or a failed one.
-    static let reloadAfter: TimeInterval = 20 * 60
+    /// How soon to ask WidgetKit for the next reload after a failed one;
+    /// after a good one, when the forecast stops being current (`RefreshPolicy`).
     static let reloadAfterFailure: TimeInterval = 45 * 60
     /// Entries step the "now" marker forward between refreshes.
     static let entrySpacing: TimeInterval = 15 * 60
@@ -53,8 +48,11 @@ struct TideProvider: AppIntentTimelineProvider {
 
     func timeline(for configuration: SelectStationIntent, in context: Context) async -> Timeline<TideEntry> {
         let settings = SharedSettings.load()
-        let (entries, fresh) = await currentEntries(configuration, settings: settings)
-        let next = Date().addingTimeInterval(fresh ? Self.reloadAfter : Self.reloadAfterFailure)
+        let (entries, fresh, snap) = await currentEntries(configuration, settings: settings)
+        let lifetime = RefreshPolicy.lifetime(for: .widget, liveObservations: snap?.latestObservation != nil)
+        let next = fresh
+            ? max((snap?.issued ?? Date()) + lifetime, Date() + 5 * 60)
+            : Date().addingTimeInterval(Self.reloadAfterFailure)
         return Timeline(entries: entries, policy: .after(next))
     }
 
@@ -66,15 +64,15 @@ struct TideProvider: AppIntentTimelineProvider {
         return SharedSettings.load().favoriteIDs.lazy.compactMap { id in all.first { $0.id == id } }.first
     }
 
-    private func currentEntries(_ configuration: SelectStationIntent, settings: SharedSettings) async -> (entries: [TideEntry], fresh: Bool) {
+    private func currentEntries(_ configuration: SelectStationIntent, settings: SharedSettings)
+        async -> (entries: [TideEntry], fresh: Bool, snapshot: ForecastSnapshot?) {
         let now = Date()
         guard let station = resolveStation(configuration) else {
-            return ([TideEntry(date: now, state: .needsStation, unit: settings.unit)], true)
+            return ([TideEntry(date: now, state: .needsStation, unit: settings.unit)], true, nil)
         }
         var snap = AppGroup.snapshots.load(stationID: station.id)
         let forced = AppGroup.defaults.string(forKey: RefreshTideIntent.forceKey) == station.id
-        let wantDatum = settings.datum(for: station)
-        let wantsFetch = forced || snap == nil || snap!.datum != wantDatum || now.timeIntervalSince(snap!.issued) > Self.maxAge
+        let wantsFetch = forced || snap.map { !settings.accepts($0, for: station) || !RefreshPolicy.isCurrent($0, surface: .widget, now: now) } ?? true
         // Back off after a failure so a persistent error doesn't spend the
         // widget's refresh budget on a full forecast every reload.
         let lastFailure = AppGroup.defaults.object(forKey: Self.lastFailureKey) as? Date
@@ -85,12 +83,16 @@ struct TideProvider: AppIntentTimelineProvider {
         if needsFetch {
             if forced { AppGroup.defaults.removeObject(forKey: RefreshTideIntent.forceKey) }
             do {
-                let forecast = try await Self.fetch(station, datum: settings.datum)
-                let s = ForecastSnapshot(forecast: forecast)
-                try? AppGroup.snapshots.save(s)
-                snap = s
+                let result = try await Self.fetch(station, settings: settings)
+                let s = ForecastSnapshot(result: result)
+                // Newest wins: if the app published something newer meanwhile, show that.
+                if !ForecastPublisher.publish(s), let stored = AppGroup.snapshots.load(stationID: station.id) {
+                    snap = stored
+                } else {
+                    snap = s
+                }
                 // Keep tomorrow's morning summary as fresh as the widget.
-                await MorningSchedule.refresh(from: forecast, station: station, settings: settings)
+                await MorningSchedule.refresh(from: result.forecast, station: station, settings: settings)
                 fresh = true
                 AppGroup.defaults.removeObject(forKey: Self.lastFailureKey)
             } catch {
@@ -98,24 +100,24 @@ struct TideProvider: AppIntentTimelineProvider {
                 AppGroup.defaults.set(now, forKey: Self.lastFailureKey)
             }
         }
-        guard let ready = snap, ready.datum == wantDatum else {
-            return ([TideEntry(date: now, state: .unavailable(stationName: station.name, message: failure ?? "No forecast yet."), unit: settings.unit)], false)
+        guard let ready = snap, settings.accepts(ready, for: station) else {
+            return ([TideEntry(date: now, state: .unavailable(stationName: station.name, message: failure ?? "No forecast yet."), unit: settings.unit)], false, nil)
         }
         let last = min(now + Self.entryHorizon, max(ready.end, now))
         let count = max(1, Int(last.timeIntervalSince(now) / Self.entrySpacing) + 1)
         let entries = (0..<count).map { i in
             TideEntry(date: now + Double(i) * Self.entrySpacing, state: .ready(ready), unit: settings.unit)
         }
-        return (entries, fresh)
+        return (entries, fresh, ready)
     }
 
-    static func fetch(_ station: Station, datum: TidalDatum) async throws -> WaterLevelForecast {
-        let service = ForecastService(api: APIClient(identity: AppIdentity.fromBundle(), credentials: AppGroup.credentials()))
-        let options = ForecastOptions(datum: datum, horizonHours: 48, blendOfficialGuidance: true)
-        let result = try await withTimeout(seconds: 25) {
+    /// Same options as the app (datum, blending) over the widget's 48 hours.
+    static func fetch(_ station: Station, settings: SharedSettings) async throws -> ForecastResult {
+        let service = AppGroup.makeService()
+        let options = settings.forecastOptions(horizonHours: 48)
+        return try await withTimeout(seconds: 25) {
             try await service.forecast(for: station, options: options)
         }
-        return result.forecast
     }
 }
 

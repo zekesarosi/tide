@@ -15,6 +15,8 @@ struct TideCalendarView: View {
     @State private var selected: Date?
     @State private var hourly: HourlyDay?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.forecastNow) private var forecastNow
+    private var now: Date { forecastNow ?? Date() }
 
     /// Highest water on one station day.
     struct HourlyDay: Identifiable {
@@ -63,7 +65,7 @@ struct TideCalendarView: View {
     /// First day of each month from now to the forecast horizon.
     private var months: [Date] {
         let cal = calendar
-        guard var m = cal.dateInterval(of: .month, for: forecast.issued)?.start else { return [] }
+        guard var m = cal.dateInterval(of: .month, for: now)?.start else { return [] }
         var out: [Date] = []
         while m <= forecast.horizon {
             out.append(m)
@@ -90,7 +92,7 @@ struct TideCalendarView: View {
                 header(month: month, index: index, count: months.count, top: top)
 
                 MonthGrid(month: month, days: days, peaks: all, range: lo...hi, top: top?.day,
-                          selected: focus?.day, today: calendar.startOfDay(for: forecast.issued),
+                          selected: focus?.day, today: calendar.startOfDay(for: now),
                           calendar: calendar, unit: unit, tz: tz, reduceMotion: reduceMotion) { day in
                     withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.75)) {
                         selected = day
@@ -109,7 +111,7 @@ struct TideCalendarView: View {
                 if !monthPeaks.isEmpty { legend(lo: lo, hi: hi) }
                 if let focus {
                     DayDetail(peak: focus, isTop: focus.day == top?.day, events: events(on: focus.day),
-                              unit: unit, tz: tz, now: forecast.issued) { hourly = HourlyDay(day: focus.day) }
+                              unit: unit, tz: tz, now: now) { hourly = HourlyDay(day: focus.day) }
                 }
             }
             .clipped()

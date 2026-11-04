@@ -42,16 +42,16 @@ struct StationListView: View {
         .searchable(text: $query, prompt: "Search stations")
         .refreshable {
             await store.load(service: env.service, force: true)
-            await favorites.refresh(favoriteStations, service: env.service, options: settings.forecastOptions, force: true)
+            await favorites.refresh(favoriteStations, using: env.forecasts, options: settings.forecastOptions, force: true)
         }
         .task(id: location.location.map { "\(Int($0.coordinate.latitude * 100)),\(Int($0.coordinate.longitude * 100)),\(store.stations.count)" }) {
             guard let loc = location.location else { return }
             nearby = store.nearest(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude, limit: 3)
                 .map { (station: $0.0, meters: $0.1) }
         }
-        .task(id: settings.favoriteIDs) {
-            favorites.loadSaved(favoriteStations)
-            await favorites.refresh(favoriteStations, service: env.service, options: settings.forecastOptions)
+        .task(id: FavoritesKey(ids: settings.favoriteIDs, options: settings.forecastOptions, stations: store.stations.count)) {
+            favorites.show(favoriteStations)
+            await favorites.refresh(favoriteStations, using: env.forecasts, options: settings.forecastOptions)
         }
         .overlay {
             if store.stations.isEmpty {
@@ -162,50 +162,70 @@ struct StationListView: View {
 
 // MARK: - Favorites
 
-/// Keeps the latest snapshot per favorite and refreshes stale ones in the
-/// background (also feeding the widgets).
+private struct FavoritesKey: Hashable {
+    let ids: [String]
+    let options: ForecastOptions
+    let stations: Int
+}
+
+/// Shows the shared store's latest snapshot per favorite (whichever process
+/// wrote it) and refreshes stale ones in the background.
 @MainActor
 @Observable
 final class FavoritesModel {
     private(set) var snapshots: [String: ForecastSnapshot] = [:]
     private(set) var refreshing: Set<String> = []
+    @ObservationIgnored private var stations: [Station] = []
+    @ObservationIgnored private var subscription: ForecastSubscription?
 
-    static let maxAge: TimeInterval = 30 * 60
-
-    func loadSaved(_ stations: [Station]) {
-        for s in stations where snapshots[s.id] == nil {
-            if let snap = AppGroup.snapshots.load(stationID: s.id) { snapshots[s.id] = snap }
-        }
+    init() {
+        // The widget (or a station screen) published a newer forecast.
+        subscription = ForecastSubscription { [weak self] in self?.reloadFromStore() }
     }
 
-    func refresh(_ stations: [Station], service: ForecastService, options: ForecastOptions, force: Bool = false) async {
+    func show(_ stations: [Station]) {
+        self.stations = stations
+        reloadFromStore()
+    }
+
+    /// Re-read the shared store for the favorites on screen.
+    func reloadFromStore() {
+        var next: [String: ForecastSnapshot] = [:]
+        for s in stations {
+            if let snap = AppGroup.snapshots.load(stationID: s.id) { next[s.id] = snap }
+        }
+        if next != snapshots { snapshots = next }
+    }
+
+    /// Refresh favorites whose shared snapshot isn't current (`RefreshPolicy`)
+    /// or was built with other settings. Results reach the cards through the
+    /// shared store's change signal, like the widget's do.
+    func refresh(_ stations: [Station], using repository: ForecastRepository, options: ForecastOptions, force: Bool = false) async {
         let shared = SharedSettings.load()
         let due = stations.filter { s in
             guard !refreshing.contains(s.id) else { return false }
             guard let snap = snapshots[s.id], !force else { return true }
-            return Date().timeIntervalSince(snap.issued) > Self.maxAge || snap.datum != shared.datum(for: s)
+            return !RefreshPolicy.isCurrent(snap, surface: .app) || !shared.accepts(snap, for: s)
         }
         .prefix(4)
         guard !due.isEmpty else { return }
         for s in due { refreshing.insert(s.id) }
-        await withTaskGroup(of: (String, ForecastSnapshot?).self) { group in
+        await withTaskGroup(of: Void.self) { group in
             for s in due {
-                group.addTask {
-                    let result = try? await service.forecast(for: s, options: options)
-                    if let result { await ForecastCache.shared.store(result, for: s) }
-                    return (s.id, result.map { ForecastSnapshot(forecast: $0.forecast) })
-                }
-            }
-            for await (id, snap) in group {
-                refreshing.remove(id)
-                if let snap {
-                    snapshots[id] = snap
-                    try? AppGroup.snapshots.save(snap)
+                group.addTask { @MainActor in
+                    _ = try? await repository.forecast(for: s, options: options, force: force)
+                    self.refreshing.remove(s.id)
                 }
             }
         }
-        WidgetBridge.settingsChanged()
     }
+}
+
+/// Keeps a `ForecastPublisher` observation alive for its owner's lifetime.
+final class ForecastSubscription {
+    private let token: Int32
+    @MainActor init(_ handler: @escaping @MainActor () -> Void) { token = ForecastPublisher.observe(handler) }
+    deinit { ForecastPublisher.stopObserving(token) }
 }
 
 /// A favorite: reading, trend, next tide, today's tide line and the anomaly.
