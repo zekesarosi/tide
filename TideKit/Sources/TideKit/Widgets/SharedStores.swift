@@ -23,18 +23,21 @@ public struct ForecastSnapshotStore: Sendable {
         // NaN marks gaps in the curves; encode it explicitly.
         encoder.nonConformingFloatEncodingStrategy = .convertToString(positiveInfinity: "inf", negativeInfinity: "-inf", nan: "nan")
         let data = try encoder.encode(snapshot)
+        func writeIfNewer(_ target: URL) -> Result<Bool, Error> {
+            if let existing = Self.decode(at: target), existing.issued > snapshot.issued { return .success(false) }
+            return Result { try data.write(to: target, options: .atomic); return true }
+        }
+        #if canImport(Darwin)
         var coordinationError: NSError?
         var outcome: Result<Bool, Error> = .success(false)
         NSFileCoordinator().coordinate(writingItemAt: url(for: snapshot.stationID), options: .forReplacing,
-                                       error: &coordinationError) { target in
-            if let existing = Self.decode(at: target), existing.issued > snapshot.issued {
-                outcome = .success(false)
-                return
-            }
-            outcome = Result { try data.write(to: target, options: .atomic); return true }
-        }
+                                       error: &coordinationError) { outcome = writeIfNewer($0) }
         if let coordinationError { throw coordinationError }
         return try outcome.get()
+        #else
+        // No app extensions here, so no other process to coordinate with.
+        return try writeIfNewer(url(for: snapshot.stationID)).get()
+        #endif
     }
 
     static func decode(at url: URL) -> ForecastSnapshot? {

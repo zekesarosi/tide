@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 /// Responses kept on disk across launches and shared between processes (the
@@ -8,8 +7,10 @@ import Foundation
 /// whichever process asks first, not once per process per launch.
 ///
 /// Each entry is a file named by a hash of the request key, holding a small
-/// header (expiry and time-to-live) and the body. Keeping the expiry in the
-/// file avoids reading file timestamps.
+/// header (expiry and time-to-live), the key itself (checked on read, so a
+/// hash collision is a miss, never the wrong response) and the body. Keeping
+/// the expiry in the file avoids reading file timestamps. Plain Foundation,
+/// so it builds on Linux too.
 public struct DiskResponseCache: Sendable {
     public let directory: URL
 
@@ -26,15 +27,25 @@ public struct DiskResponseCache: Sendable {
     public init(directory: URL) { self.directory = directory }
 
     func file(for key: String) -> URL {
-        let digest = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
-        return directory.appendingPathComponent(String(digest.prefix(40)))
+        // FNV-1a, 64-bit: stable across launches and platforms (unlike `Hasher`).
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in key.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        return directory.appendingPathComponent(String(format: "%016llx", hash))
     }
 
     /// The body stored for `key` if it hasn't expired.
     public func read(_ key: String, now: Date = Date()) -> Data? {
         guard let data = try? Data(contentsOf: file(for: key)), let h = Self.header(data),
               h.expires > now.timeIntervalSince1970 else { return nil }
-        return data.dropFirst(Self.headerSize)
+        let rest = data.dropFirst(Self.headerSize)
+        let keyBytes = Data(key.utf8)
+        guard rest.count >= 4 else { return nil }
+        let length = rest.prefix(4).enumerated().reduce(0) { $0 | Int($1.element) << (8 * $1.offset) }
+        guard length == keyBytes.count, rest.dropFirst(4).prefix(length).elementsEqual(keyBytes) else { return nil }
+        return Data(rest.dropFirst(4 + length))
     }
 
     public func write(_ body: Data, for key: String, ttl: TimeInterval, now: Date = Date()) {
@@ -42,6 +53,9 @@ public struct DiskResponseCache: Sendable {
         var out = Data(capacity: Self.headerSize + body.count)
         withUnsafeBytes(of: (now.timeIntervalSince1970 + ttl).bitPattern.littleEndian) { out.append(contentsOf: $0) }
         withUnsafeBytes(of: ttl.bitPattern.littleEndian) { out.append(contentsOf: $0) }
+        let keyBytes = Data(key.utf8)
+        withUnsafeBytes(of: UInt32(keyBytes.count).littleEndian) { out.append(contentsOf: $0) }
+        out.append(keyBytes)
         out.append(body)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try? out.write(to: file(for: key), options: .atomic)
