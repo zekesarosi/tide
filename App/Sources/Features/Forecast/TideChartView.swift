@@ -1,10 +1,15 @@
 import Charts
+import QuartzCore
 import SwiftUI
 import TideKit
+import UIKit
 
 /// The signature "tide line": full-bleed water level with the observed past,
 /// the forecast and its 80 % range, the tide table, high/low labels and a
-/// "now" dot. Swipe to move through time; touch and hold to read any moment.
+/// "now" dot. Drawn with `Canvas` so pinching, panning and scrubbing redraw
+/// the exact curve every frame at any zoom, rather than stretching an image.
+/// Swipe to move through time, pinch to zoom (6 h to 45 days), touch and hold
+/// to read any moment.
 struct TideLineChart: View {
     let forecast: WaterLevelForecast
     let unit: LengthUnit
@@ -15,42 +20,25 @@ struct TideLineChart: View {
         var id: String { rawValue }
     }
 
-    @State private var window: Window = .day
-    /// The moment being scrubbed. Not plain `@State` for the same reason as
-    /// `scroll`: only the cursor overlay and the readout row observe it.
-    @State private var selection = SelectionState()
-    /// Leading edge of the visible range while scrolling. Not plain `@State`:
-    /// the chart writes it on every scroll frame, and a state change would
-    /// re-run this body and rebuild every mark each frame.
-    @State private var scroll: ScrollState
-    @State private var cache = SeriesCache()
+    /// What's on screen. Only the canvas, the row under it and the picker
+    /// observe it, so a pan or pinch frame never re-runs this body.
+    @State private var viewport: ChartViewport
+    @State private var store = ChartDataStore()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(forecast: WaterLevelForecast, unit: LengthUnit, tz: TimeZone) {
         self.forecast = forecast
         self.unit = unit
         self.tz = tz
-        _scroll = State(initialValue: ScrollState(Self.homeStart(.day, forecast: forecast, tz: tz),
-                                                  home: ScrollState.Home(window: .day, issued: forecast.issued)))
-    }
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    struct Point: Identifiable {
-        let id: String
-        let date: Date
-        let value: Double
+        _viewport = State(initialValue: ChartViewport(
+            bounds: Self.domain(forecast), window: .day,
+            start: Self.homeStart(.day, forecast: forecast, tz: tz).timeIntervalSince1970,
+            length: Self.presetLength(.day)))
     }
 
-    struct Band: Identifiable {
-        var id: Date { date }
-        let date: Date
-        let low: Double
-        let high: Double
-    }
-
-    /// A high or low in view: the tide-table extreme paired with the
-    /// forecast (or, in the past, observed) extreme it became.
-    struct ExtremeLabel: Identifiable {
-        var id: Date { table.date }
+    /// A high or low: the tide-table extreme paired with the forecast (or, in
+    /// the past, observed) extreme it became.
+    struct ExtremeLabel {
         let kind: TideExtremeKind
         let table: TideExtreme
         let actual: TideExtreme?
@@ -66,44 +54,43 @@ struct TideLineChart: View {
         }
     }
 
-    enum Layer: String, CaseIterable {
-        case water = "Water", band = "Range"
-        case predicted = "Tide table", forecast = "Forecast", observed = "Observed"
+    // MARK: Ranges
+
+    /// Everything there is to move through: the observed past to the
+    /// forecast horizon (months, with the long-range outlook), in seconds.
+    static func domain(_ f: WaterLevelForecast) -> ClosedRange<Double> {
+        let now = f.issued
+        let start = [f.observed.first?.date, f.astronomical.first?.date].compactMap { $0 }.min() ?? now - 12 * 3_600
+        let lo = Swift.min(start, now).timeIntervalSince1970
+        return lo...Swift.max(f.horizon.timeIntervalSince1970, lo + 3_600)
     }
 
-    private var calendar: Calendar {
-        var c = Calendar.current
-        c.timeZone = tz
-        return c
-    }
-
-    /// Everything there is to scroll through: the observed past to the
-    /// forecast horizon (months, with the long-range outlook).
-    private var domain: ClosedRange<Date> {
-        let now = forecast.issued
-        let start = [forecast.observed.first?.date, forecast.astronomical.first?.date].compactMap { $0 }.min() ?? now - 12 * 3_600
-        return Swift.min(start, now)...forecast.horizon
-    }
-
-    /// How much time is on screen at once (never more than there is).
-    private func visibleLength(_ d: ClosedRange<Date>) -> TimeInterval {
-        let span = d.upperBound.timeIntervalSince(d.lowerBound)
-        switch window {
-        case .day: return Swift.min(86_400, span)
-        case .twoDays: return Swift.min(48 * 3_600, span)
-        case .week: return Swift.min(7 * 86_400, span)
-        case .month: return Swift.min(30 * 86_400, span)
+    static func presetLength(_ w: Window) -> TimeInterval {
+        switch w {
+        case .day: return 86_400
+        case .twoDays: return 48 * 3_600
+        case .week: return 7 * 86_400
+        case .month: return 30 * 86_400
         }
     }
 
-    private func scrollable(_ d: ClosedRange<Date>) -> Bool {
-        visibleLength(d) < d.upperBound.timeIntervalSince(d.lowerBound) - 60
+    /// Zoom limits: a quarter day to about six weeks on screen.
+    static let zoomRange: ClosedRange<TimeInterval> = (6 * 3_600)...(45 * 86_400)
+
+    /// The preset closest to what's on screen: it sets tick spacing and
+    /// whether high/low labels fit, and is what the picker highlights.
+    static func tier(for length: TimeInterval) -> Window {
+        switch length {
+        case ..<(1.5 * 86_400): return .day
+        case ..<(4 * 86_400): return .twoDays
+        case ..<(14 * 86_400): return .week
+        default: return .month
+        }
     }
 
-    /// Where each window starts before any scrolling: today from midnight
-    /// (late in the day, keeping the next few hours in view), longer windows
-    /// from a little before now.
-    private static func homeStart(_ w: Window, forecast: WaterLevelForecast, tz: TimeZone) -> Date {
+    /// Where each preset starts: today from midnight (late in the day,
+    /// keeping the next few hours in view), longer ones from a little before now.
+    static func homeStart(_ w: Window, forecast: WaterLevelForecast, tz: TimeZone) -> Date {
         let now = forecast.issued
         switch w {
         case .day:
@@ -116,495 +103,876 @@ struct TideLineChart: View {
         }
     }
 
-    private var homeStart: Date { Self.homeStart(window, forecast: forecast, tz: tz) }
+    private func home(_ w: Window) -> Double { Self.homeStart(w, forecast: forecast, tz: tz).timeIntervalSince1970 }
 
-    // MARK: Data
+    // MARK: Body
 
-    /// Everything the chart draws across the whole scrollable range. Built
-    /// once per forecast, window and unit (see `SeriesCache`): scrubbing
-    /// re-runs the body on every move. Scrolling does not re-run it at all,
-    /// since only `ScrollHome` observes the scroll position.
-    struct Series {
-        let domain: ClosedRange<Date>
-        let observed: [Point]
-        let forecast: [Point]
-        let predicted: [Point]
-        let band: [Band]
-        let waterline: [Point]
-        let yDomain: ClosedRange<Double>
-        let ticks: [Date]
-        let extremes: [ExtremeLabel]
+    var body: some View {
+        let data = store.data(forecast: forecast, unit: unit, tz: tz)
+        VStack(alignment: .leading, spacing: 10) {
+            TideCanvas(data: data, viewport: viewport, forecast: forecast, unit: unit, tz: tz, reduceMotion: reduceMotion)
+                .frame(height: 210)
+
+            ChartFooter(data: data, viewport: viewport, forecast: forecast, unit: unit, tz: tz,
+                        home: home, reduceMotion: reduceMotion)
+                .padding(.horizontal, Theme.margin)
+                .frame(minHeight: 18, alignment: .leading)
+
+            RangePicker(viewport: viewport, home: home, reduceMotion: reduceMotion)
+                .padding(.horizontal, Theme.margin)
+        }
+        .onChange(of: forecast.issued) {
+            viewport.updateBounds(Self.domain(forecast), home: home(viewport.window))
+        }
+    }
+}
+
+// MARK: - Viewport
+
+/// The visible time range (seconds since 1970) and the scrubbed moment.
+/// Gestures and animations write it every frame; the views that draw it
+/// observe it.
+@MainActor
+@Observable
+final class ChartViewport {
+    private(set) var start: Double
+    private(set) var length: Double
+    var selection: Double?
+
+    @ObservationIgnored private(set) var bounds: ClosedRange<Double>
+    /// The preset last picked (homes the Now button and new forecasts).
+    @ObservationIgnored var window: TideLineChart.Window
+    /// Set once the reader has moved the chart, so a refreshed forecast
+    /// doesn't yank it back home.
+    @ObservationIgnored private(set) var interacted = false
+    @ObservationIgnored private let driver = FrameDriver()
+
+    init(bounds: ClosedRange<Double>, window: TideLineChart.Window, start: Double, length: Double) {
+        self.bounds = bounds
+        self.window = window
+        self.start = start
+        self.length = length
+        set(start: start, length: length)
     }
 
-    /// The chart draws the full curve from the observed past to a week ahead;
-    /// further out it joins the forecast highs and lows. Months of 10-minute
-    /// points would be tens of thousands of marks.
-    private static let denseHorizon: TimeInterval = 7 * 86_400
+    var span: Double { bounds.upperBound - bounds.lowerBound }
+    var lengthRange: ClosedRange<Double> {
+        let lo = Swift.min(TideLineChart.zoomRange.lowerBound, span)
+        return lo...Swift.max(lo, Swift.min(TideLineChart.zoomRange.upperBound, span))
+    }
+    var canPan: Bool { length < span - 60 }
 
-    /// What a `Series` depends on, cheap to compare (the forecast itself is
-    /// tens of thousands of points).
-    fileprivate struct SeriesKey: Equatable {
-        let issued: Date
-        let horizon: Date
-        let observedCount: Int
-        let totalCount: Int
-        let window: Window
-        let unit: LengthUnit
-        let tz: TimeZone
+    func clamped(start s: Double, length l: Double) -> (start: Double, length: Double) {
+        let r = lengthRange
+        let len = Swift.min(Swift.max(l, r.lowerBound), r.upperBound)
+        let st = Swift.min(Swift.max(s, bounds.lowerBound), bounds.upperBound - len)
+        return (st, len)
     }
 
-    private var seriesKey: SeriesKey {
-        SeriesKey(issued: forecast.issued, horizon: forecast.horizon, observedCount: forecast.observed.points.count,
-                  totalCount: forecast.total.points.count, window: window, unit: unit, tz: tz)
+    func set(start s: Double, length l: Double) {
+        let c = clamped(start: s, length: l)
+        if c.length != length { length = c.length }
+        if c.start != start { start = c.start }
     }
 
-    private func cachedSeries() -> Series {
-        let key = seriesKey
-        if let hit = cache.series(for: key) { return hit }
-        let s = makeSeries()
-        cache.store(s, for: key)
-        return s
+    func beginInteraction() {
+        driver.stop()
+        interacted = true
     }
 
-    private func makeSeries() -> Series {
-        let d = domain
-        let denseEnd = Swift.min(d.upperBound, forecast.issued + Self.denseHorizon)
-        let dense = d.lowerBound...denseEnd
-        // ~20-minute spacing over the dense range: smooth at any zoom.
-        func pts(_ s: TimeSeries, _ layer: Layer, spacing: TimeInterval = 1_200) -> [Point] {
-            let inside = s.points.filter { dense.contains($0.date) }
-            let maxPoints = Swift.max(1, Int(dense.upperBound.timeIntervalSince(dense.lowerBound) / spacing))
-            let stride = Swift.max(1, inside.count / maxPoints)
-            return inside.enumerated().compactMap { i, p in
-                i % stride == 0 ? point(layer, p.date, p.value) : nil
+    /// Pinch: `scale` > 1 zooms in, keeping `anchorTime` under `fraction` of the width.
+    func zoom(scale: Double, from baseLength: Double, anchorTime: Double, fraction: Double) {
+        guard scale.isFinite, scale > 0 else { return }
+        let r = lengthRange
+        let len = Swift.min(Swift.max(baseLength / scale, r.lowerBound), r.upperBound)
+        set(start: anchorTime - len * fraction, length: len)
+    }
+
+    /// Momentum after a pan: `velocity` in seconds of time per second,
+    /// decaying like a scroll view.
+    func fling(velocity: Double) {
+        var v = velocity
+        guard abs(v) > length * 0.05 else { return }
+        driver.run { [weak self] dt in
+            guard let self else { return false }
+            let before = self.start
+            self.set(start: self.start + v * dt, length: self.length)
+            v *= pow(0.998, dt * 1_000)
+            return self.start != before && abs(v) > self.length * 0.02
+        }
+    }
+
+    /// Ease to a range (presets, Now, VoiceOver). Length moves in log space
+    /// so zooming feels even.
+    func animate(toStart s: Double, length l: Double, duration: Double) {
+        driver.stop()
+        let target = clamped(start: s, length: l)
+        guard duration > 0 else { set(start: target.start, length: target.length); return }
+        let s0 = start, l0 = length
+        var t = 0.0
+        driver.run { [weak self] dt in
+            guard let self else { return false }
+            t = Swift.min(t + dt, duration)
+            let p = t / duration
+            let e = p < 0.5 ? 4 * p * p * p : 1 - pow(-2 * p + 2, 3) / 2
+            self.set(start: s0 + (target.start - s0) * e, length: l0 * pow(target.length / l0, e))
+            return t < duration
+        }
+    }
+
+    func updateBounds(_ b: ClosedRange<Double>, home: Double) {
+        bounds = b
+        set(start: interacted ? start : home, length: length)
+    }
+}
+
+/// Calls `tick(dt)` every display frame until it returns false.
+@MainActor
+final class FrameDriver: NSObject {
+    private var link: CADisplayLink?
+    private var tick: ((Double) -> Bool)?
+    private var last: CFTimeInterval?
+
+    func run(_ tick: @escaping (Double) -> Bool) {
+        stop()
+        self.tick = tick
+        let l = CADisplayLink(target: self, selector: #selector(step(_:)))
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        l.add(to: .main, forMode: .common)
+        link = l
+    }
+
+    func stop() {
+        link?.invalidate()
+        link = nil
+        tick = nil
+        last = nil
+    }
+
+    @objc private func step(_ l: CADisplayLink) {
+        let dt = last.map { l.timestamp - $0 } ?? 1.0 / 60
+        last = l.timestamp
+        if tick?(Swift.min(Swift.max(dt, 1.0 / 240), 1.0 / 20)) != true { stop() }
+    }
+}
+
+// MARK: - Data
+
+/// One series in display units, sorted by time (seconds since 1970).
+struct ChartLine {
+    var t: [Double] = []
+    var v: [Double] = []
+
+    init() {}
+    init(_ s: TimeSeries, _ unit: LengthUnit) {
+        t = s.points.map { $0.date.timeIntervalSince1970 }
+        v = s.points.map { unit.fromMeters($0.value) }
+    }
+
+    var isEmpty: Bool { t.isEmpty }
+
+    /// First index with t ≥ x.
+    func lowerIndex(_ x: Double) -> Int {
+        var lo = 0, hi = t.count
+        while lo < hi { let m = (lo + hi) / 2; if t[m] < x { lo = m + 1 } else { hi = m } }
+        return lo
+    }
+
+    /// First index with t > x.
+    func upperIndex(_ x: Double) -> Int {
+        var lo = 0, hi = t.count
+        while lo < hi { let m = (lo + hi) / 2; if t[m] <= x { lo = m + 1 } else { hi = m } }
+        return lo
+    }
+
+    /// Indices covering [a, b] plus one point either side, so lines run off the edges.
+    func covering(_ a: Double, _ b: Double) -> Range<Int> {
+        Swift.max(lowerIndex(a) - 1, 0)..<Swift.min(upperIndex(b) + 1, t.count)
+    }
+
+    func value(at x: Double, maxGap: Double = 1_200) -> Double? {
+        let i = lowerIndex(x)
+        if i < t.count, t[i] == x { return v[i] }
+        guard i > 0, i < t.count, t[i] - t[i - 1] <= maxGap else { return nil }
+        let w = (x - t[i - 1]) / (t[i] - t[i - 1])
+        return v[i - 1] + w * (v[i] - v[i - 1])
+    }
+
+    func prefix(before x: Double) -> ChartLine {
+        var out = ChartLine()
+        let n = lowerIndex(x)
+        out.t = Array(t[..<n])
+        out.v = Array(v[..<n])
+        return out
+    }
+
+    static func + (a: ChartLine, b: ChartLine) -> ChartLine {
+        var out = a
+        out.t += b.t
+        out.v += b.v
+        return out
+    }
+}
+
+/// The last `ChartData` built, so body passes reuse it. Plain class: storing
+/// into it mustn't invalidate the view.
+final class ChartDataStore {
+    private struct Key: Equatable {
+        let issued: Date, horizon: Date, observed: Int, total: Int, unit: LengthUnit, tz: TimeZone
+    }
+    private var key: Key?
+    private var value: ChartData?
+
+    func data(forecast f: WaterLevelForecast, unit: LengthUnit, tz: TimeZone) -> ChartData {
+        let k = Key(issued: f.issued, horizon: f.horizon, observed: f.observed.points.count,
+                    total: f.total.points.count, unit: unit, tz: tz)
+        if k == key, let value { return value }
+        let d = ChartData(forecast: f, unit: unit, tz: tz)
+        key = k
+        value = d
+        return d
+    }
+}
+
+/// Everything the canvas draws, prepared once per forecast and unit. Each
+/// frame draws only the visible slice, thinned to about two points a pixel.
+final class ChartData {
+    struct Tag {
+        struct Line { let text: String; let color: Color; let bold: Bool }
+        let t: Double
+        let high: Bool
+        let v: Double
+        let lines: [Line]
+        let dot: Color
+    }
+
+    let unit: LengthUnit
+    let tz: TimeZone
+    let calendar: Calendar
+    let bounds: ClosedRange<Double>
+    let observed: ChartLine
+    let forecast: ChartLine
+    let lower: ChartLine
+    let upper: ChartLine
+    let table: ChartLine
+    /// Observed until the forecast starts, then the forecast: the water fill.
+    let water: ChartLine
+    /// Where the drawn line switches from observed to forecast.
+    let cut: Double
+    let yLo: Double
+    let yHi: Double
+    let tags: [Tag]
+    let now: Double
+    let nowLevel: Double?
+    let outlook: Double?
+    private var tickLabels: [Double: String] = [:]
+
+    static let axisHeight: CGFloat = 22
+
+    init(forecast f: WaterLevelForecast, unit: LengthUnit, tz: TimeZone) {
+        self.unit = unit
+        self.tz = tz
+        var c = Calendar.current
+        c.timeZone = tz
+        calendar = c
+        bounds = TideLineChart.domain(f)
+        observed = ChartLine(f.observed, unit)
+        forecast = ChartLine(f.total, unit)
+        lower = ChartLine(f.totalLower, unit)
+        upper = ChartLine(f.totalUpper, unit)
+        table = ChartLine(f.astronomical, unit)
+        cut = f.total.first?.date.timeIntervalSince1970 ?? f.issued.timeIntervalSince1970
+        water = observed.prefix(before: cut) + forecast
+        now = f.issued.timeIntervalSince1970
+        if let v = f.total.value(at: f.issued, maxGap: 3_600) {
+            nowLevel = unit.fromMeters(v)
+        } else if let o = f.observed.last, f.issued.timeIntervalSince(o.date) < 3_600 {
+            nowLevel = unit.fromMeters(o.value)
+        } else {
+            nowLevel = nil
+        }
+        outlook = f.weatherHorizon.flatMap { $0 < f.horizon - 3_600 ? $0.timeIntervalSince1970 : nil }
+        let all = water.v + table.v + lower.v + upper.v
+        let lo = all.min() ?? 0, hi = all.max() ?? 1
+        yLo = lo
+        yHi = hi > lo ? hi : lo + 1
+        tags = Self.makeTags(f, unit: unit, tz: tz)
+    }
+
+    // MARK: Tags
+
+    /// Every tide-table high and low, matched with the forecast extreme (or
+    /// the observed one, before now) within ±3 h.
+    private static func makeTags(_ f: WaterLevelForecast, unit: LengthUnit, tz: TimeZone) -> [Tag] {
+        let total = ChartLine(f.total, .meters), obs = ChartLine(f.observed, .meters)
+        let window: Double = 3 * 3_600
+        func pick(_ l: ChartLine, _ t: TideExtreme) -> TideExtreme? {
+            let x = t.date.timeIntervalSince1970
+            let i0 = l.lowerIndex(x - window), i1 = l.upperIndex(x + window)
+            guard i1 - i0 >= 3 else { return nil }
+            var best = i0
+            for i in i0..<i1 where t.kind == .high ? l.v[i] > l.v[best] : l.v[i] < l.v[best] { best = i }
+            // An extreme on the edge of the search window is just a slope, not a turn.
+            guard best != i0, best != i1 - 1 else { return nil }
+            return TideExtreme(date: Date(timeIntervalSince1970: l.t[best]), height: l.v[best], kind: t.kind)
+        }
+        func line(_ e: TideExtreme) -> String {
+            let t = e.date.formatted(Date.FormatStyle(timeZone: tz).hour(.defaultDigits(amPM: .narrow)).minute())
+            return "\(t) \(Fmt.length(e.height, unit))"
+        }
+        return f.astronomical.extrema().map { t in
+            let label: TideLineChart.ExtremeLabel
+            if let fc = pick(total, t) {
+                label = .init(kind: t.kind, table: t, actual: fc, observed: false)
+            } else {
+                let o = t.date <= f.issued ? pick(obs, t) : nil
+                label = .init(kind: t.kind, table: t, actual: o, observed: o != nil)
             }
+            var lines: [Tag.Line] = []
+            if let a = label.actual {
+                lines.append(.init(text: line(a), color: label.observed ? Theme.harbor : Theme.swellText, bold: true))
+            }
+            if label.showsTable { lines.append(.init(text: line(label.table), color: Theme.inkSecondary, bold: false)) }
+            let dot = label.actual == nil ? Theme.tideTable : (label.observed ? Theme.harbor : Theme.swell)
+            return Tag(t: label.anchor.date.timeIntervalSince1970, high: t.kind == .high,
+                       v: unit.fromMeters(label.anchor.height), lines: lines, dot: dot)
         }
-        func point(_ layer: Layer, _ date: Date, _ meters: Double) -> Point {
-            Point(id: "\(layer.rawValue)\(date.timeIntervalSince1970)", date: date, value: unit.fromMeters(meters))
-        }
-        let outlook = forecast.events.filter { $0.date > denseEnd && d.contains($0.date) }
-        let obs = pts(forecast.observed, .observed, spacing: 600)
-        let fc = pts(forecast.total, .forecast) + outlook.map { point(.forecast, $0.date, $0.total) }
-        let pred = pts(forecast.astronomical, .predicted) + outlook.map { point(.predicted, $0.date, $0.astronomical) }
-        let bandStride = Swift.max(1, forecast.totalLower.points.filter { dense.contains($0.date) }.count
-            / Swift.max(1, Int(dense.upperBound.timeIntervalSince(dense.lowerBound) / 1_200)))
-        let band = zip(forecast.totalLower.points, forecast.totalUpper.points)
-            .enumerated()
-            .filter { $0.offset % bandStride == 0 && dense.contains($0.element.0.date) }
-            .map { Band(date: $0.element.0.date, low: unit.fromMeters($0.element.0.value), high: unit.fromMeters($0.element.1.value)) }
-            + outlook.map { Band(date: $0.date, low: unit.fromMeters($0.lower80), high: unit.fromMeters($0.upper80)) }
-        let cut = fc.first?.date ?? forecast.issued
-        let water = obs.filter { $0.date < cut } + fc
-        let extremes = (window == .day || window == .twoDays) ? extremeLabels(dense: dense, outlook: outlook) : []
+    }
 
-        var yd: ClosedRange<Double> = 0...1
-        let values = (water + pred).map(\.value) + band.flatMap { [$0.low, $0.high] }
-        if var lo = values.min(), var hi = values.max(), lo < hi {
-            // Leave room for the high/low labels above and below the curve.
-            let pad = (hi - lo) * (extremes.isEmpty ? 0.1 : 0.3)
-            lo -= pad
-            hi += pad
-            yd = lo...hi
-        }
+    // MARK: Ticks
 
-        // Ticks on the station's clock, day by day, so they stay put across DST
-        // changes: every 6 or 12 h, each midnight (week) or each Monday (month).
-        let hours: [Int] = switch window {
-        case .day: [0, 6, 12, 18]
+    /// Ticks on the station's clock, day by day so they stay put across DST:
+    /// every 2 h (≤ 12 h on screen), 6 h, 12 h, each midnight, or each Monday.
+    func ticks(start: Double, end: Double, length: Double) -> [(t: Double, label: String)] {
+        let tier = TideLineChart.tier(for: length)
+        let hours: [Int] = switch tier {
+        case .day: length <= 12 * 3_600 ? Array(stride(from: 0, to: 24, by: 2)) : [0, 6, 12, 18]
         case .twoDays: [0, 12]
         case .week, .month: [0]
         }
-        var ticks: [Date] = []
-        var day = calendar.startOfDay(for: d.lowerBound)
-        while day <= d.upperBound {
-            if window != .month || calendar.component(.weekday, from: day) == 2 {
+        var out: [(Double, String)] = []
+        var day = calendar.startOfDay(for: Date(timeIntervalSince1970: start - 86_400))
+        let last = Date(timeIntervalSince1970: end)
+        while day <= last {
+            if tier != .month || calendar.component(.weekday, from: day) == 2 {
                 for h in hours {
-                    if let t = calendar.date(bySettingHour: h, minute: 0, second: 0, of: day), d.contains(t) { ticks.append(t) }
+                    guard let d = calendar.date(bySettingHour: h, minute: 0, second: 0, of: day) else { continue }
+                    let t = d.timeIntervalSince1970
+                    if t >= start - length * 0.15, t <= end { out.append((t, tickLabel(t, tier: tier))) }
                 }
             }
             guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
             day = next
         }
-        return Series(domain: d, observed: obs, forecast: fc, predicted: pred, band: band, waterline: water,
-                      yDomain: yd, ticks: ticks, extremes: extremes)
+        return out
     }
 
-    /// Tide-table highs and lows, each matched with the forecast extreme (or
-    /// the observed one, before now) within ±3 h over the dense range; past
-    /// it, the forecast events themselves (the outlook surge varies slowly,
-    /// so the forecast turns when the tide does).
-    private func extremeLabels(dense d: ClosedRange<Date>, outlook: [ForecastEvent]) -> [ExtremeLabel] {
-        let far = outlook.map { e in
-            ExtremeLabel(kind: e.kind, table: TideExtreme(date: e.date, height: e.astronomical, kind: e.kind),
-                         actual: TideExtreme(date: e.date, height: e.total, kind: e.kind), observed: false)
-        }
-        return nearExtremeLabels(in: d) + far
-    }
-
-    private func nearExtremeLabels(in d: ClosedRange<Date>) -> [ExtremeLabel] {
-        let window: TimeInterval = 3 * 3_600
-        return forecast.astronomical.sliced(from: d.lowerBound - window, to: d.upperBound + window)
-            .extrema()
-            .filter { d.contains($0.date) }
-            .map { t in
-                let range = (t.date - window)...(t.date + window)
-                func pick(_ s: TimeSeries) -> TideExtreme? {
-                    let inside = s.points.filter { range.contains($0.date) }
-                    let best = t.kind == .high ? inside.max { $0.value < $1.value } : inside.min { $0.value < $1.value }
-                    // An extreme on the edge of the search window is just a slope, not a turn.
-                    guard let best, let first = inside.first, let last = inside.last,
-                          best.date != first.date, best.date != last.date else { return nil }
-                    return TideExtreme(date: best.date, height: best.value, kind: t.kind)
-                }
-                if let fc = pick(forecast.total) {
-                    return ExtremeLabel(kind: t.kind, table: t, actual: fc, observed: false)
-                }
-                let obs = t.date <= forecast.issued ? pick(forecast.observed) : nil
-                return ExtremeLabel(kind: t.kind, table: t, actual: obs, observed: obs != nil)
-            }
-    }
-
-    private func tickLabel(_ d: Date) -> String {
-        switch window {
-        case .month: return d.formatted(Date.FormatStyle(timeZone: tz).month(.abbreviated).day())
-        case .week: return d.formatted(Date.FormatStyle(timeZone: tz).weekday(.abbreviated).day())
+    private func tickLabel(_ t: Double, tier: TideLineChart.Window) -> String {
+        let key = t * 8 + Double(TideLineChart.Window.allCases.firstIndex(of: tier) ?? 0)
+        if let hit = tickLabels[key] { return hit }
+        let d = Date(timeIntervalSince1970: t)
+        let s: String
+        switch tier {
+        case .month: s = d.formatted(Date.FormatStyle(timeZone: tz).month(.abbreviated).day())
+        case .week: s = d.formatted(Date.FormatStyle(timeZone: tz).weekday(.abbreviated).day())
         case .day, .twoDays:
-            // Midnight names the day, so a scrolled chart says which day it shows.
-            if calendar.component(.hour, from: d) == 0 {
-                return d.formatted(Date.FormatStyle(timeZone: tz).weekday(.abbreviated))
-            }
+            // Midnight names the day, so a moved chart says which day it shows.
+            s = calendar.component(.hour, from: d) == 0
+                ? d.formatted(Date.FormatStyle(timeZone: tz).weekday(.abbreviated))
+                : d.formatted(Date.FormatStyle(timeZone: tz).hour())
         }
-        return d.formatted(Date.FormatStyle(timeZone: tz).hour())
+        if tickLabels.count > 4_000 { tickLabels.removeAll() }
+        tickLabels[key] = s
+        return s
     }
 
-    private static let layerColors: [Color] = [
-        Theme.harbor.opacity(0.08), Theme.swellBand.opacity(0.24),
-        Theme.tideTable, Theme.swell, Theme.harbor,
-    ]
-
-    /// The level at the "now" dot: the forecast, or a fresh observation.
-    private var nowLevel: Double? {
-        if let v = forecast.total.value(at: forecast.issued, maxGap: 3_600) { return v }
-        if let o = forecast.observed.last, forecast.issued.timeIntervalSince(o.date) < 3_600 { return o.value }
-        return nil
+    /// Height of the drawn line at `t`: observed before the forecast starts.
+    func level(at t: Double) -> Double? {
+        t < cut ? observed.value(at: t) : forecast.value(at: t)
     }
 
-    // MARK: Body
-
-    var body: some View {
-        let series = cachedSeries()
-        // Re-run (once) when the position is set from here rather than by a
-        // scroll, so the chart picks it up.
-        let _ = scroll.jumps
-        // A new window or forecast starts from its home, in this same pass.
-        let _ = scroll.rehome(ScrollState.Home(window: window, issued: forecast.issued), to: homeStart)
-        VStack(alignment: .leading, spacing: 10) {
-            chart(series)
-                .frame(height: 210)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: window)
-                .accessibilityLabel("Water level chart")
-                .accessibilityValue(accessibilitySummary(series.domain))
-
-            ScrollHome(scroll: scroll, home: homeStart, now: forecast.issued,
-                       length: visibleLength(series.domain), enabled: scrollable(series.domain), reduceMotion: reduceMotion) { away in
-                if let date = selection.date {
-                    SelectionReadout(forecast: forecast, date: date, unit: unit, tz: tz)
-                } else {
-                    legend(compact: away)
-                }
-            }
-            .padding(.horizontal, Theme.margin)
-            .frame(minHeight: 18, alignment: .leading)
-
-            Picker("Chart range", selection: $window) {
-                ForEach(Window.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, Theme.margin)
-        }
-        .onChange(of: window) { scroll.show(homeStart) }
-        .onChange(of: forecast.issued) { scroll.show(homeStart) }
+    /// Room for the high/low tags above and below the curve while they show
+    /// (≤ 4 days on screen), easing to a tighter fit further out.
+    func yRange(length: Double) -> (lo: Double, hi: Double) {
+        let a = 4 * 86_400.0, b = 5.5 * 86_400.0
+        let f = length <= a ? 0.3 : (length >= b ? 0.1 : 0.3 - 0.2 * (length - a) / (b - a))
+        let pad = (yHi - yLo) * f
+        return (yLo - pad, yHi + pad)
     }
 
-    private func chart(_ s: Series) -> some View {
-        let base: Double = s.yDomain.lowerBound
-        let now: Date = forecast.issued
-        let level: Double? = nowLevel
-
-        return Chart {
-            ForEach(s.waterline) { p in
-                AreaMark(x: .value("Time", p.date), yStart: .value("Base", base), yEnd: .value("Level", p.value))
-                    .foregroundStyle(by: .value("Layer", Layer.water.rawValue))
-                    .interpolationMethod(.monotone)
-            }
-            ForEach(s.band) { r in
-                AreaMark(x: .value("Time", r.date), yStart: .value("Low", r.low), yEnd: .value("High", r.high))
-                    .foregroundStyle(by: .value("Layer", Layer.band.rawValue))
-                    .interpolationMethod(.monotone)
-            }
-            ForEach(s.predicted) { p in
-                LineMark(x: .value("Time", p.date), y: .value("Level", p.value), series: .value("Series", Layer.predicted.rawValue))
-                    .foregroundStyle(by: .value("Layer", Layer.predicted.rawValue))
-                    .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [3, 3]))
-                    .interpolationMethod(.monotone)
-            }
-            ForEach(s.forecast) { p in
-                LineMark(x: .value("Time", p.date), y: .value("Level", p.value), series: .value("Series", Layer.forecast.rawValue))
-                    .foregroundStyle(by: .value("Layer", Layer.forecast.rawValue))
-                    .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
-                    .interpolationMethod(.monotone)
-            }
-            ForEach(s.observed) { p in
-                LineMark(x: .value("Time", p.date), y: .value("Level", p.value), series: .value("Series", Layer.observed.rawValue))
-                    .foregroundStyle(by: .value("Layer", Layer.observed.rawValue))
-                    .lineStyle(StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round))
-                    .interpolationMethod(.monotone)
-            }
-            ForEach(s.extremes) { e in
-                PointMark(x: .value("Time", e.anchor.date), y: .value("Level", unit.fromMeters(e.anchor.height)))
-                    .symbolSize(18)
-                    .foregroundStyle(e.actual == nil ? Theme.tideTable : (e.observed ? Theme.harbor : Theme.swell))
-                    .annotation(position: e.kind == .high ? .top : .bottom, spacing: 3,
-                                overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
-                        ExtremeTag(label: e, unit: unit, tz: tz)
-                    }
-            }
-            if let w = forecast.weatherHorizon, w < s.domain.upperBound - 3_600 {
-                RuleMark(x: .value("Outlook", w))
-                    .foregroundStyle(Theme.inkSecondary.opacity(0.35))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3]))
-                    .annotation(position: .top, alignment: .leading, spacing: 0,
-                                overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
-                        Text("Outlook ›")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(Theme.inkSecondary)
-                            .padding(.leading, 4)
-                            .accessibilityLabel("Beyond here the weather forecast ends; tide table plus typical surge")
-                    }
-            }
-            if s.domain.contains(now) {
-                RuleMark(x: .value("Now", now))
-                    .foregroundStyle(Theme.ink.opacity(0.18))
-                    .lineStyle(StrokeStyle(lineWidth: 1))
-                if let level {
-                    PointMark(x: .value("Now", now), y: .value("Level", unit.fromMeters(level)))
-                        .symbol {
-                            NowDot()
-                        }
-                }
-            }
-        }
-        .chartForegroundStyleScale(domain: Layer.allCases.map(\.rawValue), range: Self.layerColors)
-        .chartLegend(.hidden)
-        .chartXScale(domain: s.domain)
-        .chartScrollableAxes(scrollable(s.domain) ? .horizontal : [])
-        .chartXVisibleDomain(length: visibleLength(s.domain))
-        .chartScrollPosition(x: scroll.chartBinding)
-        .chartYScale(domain: s.yDomain)
-        .chartYAxis(.hidden)
-        .chartXAxis {
-            AxisMarks(values: s.ticks) { value in
-                AxisGridLine().foregroundStyle(Theme.hairline)
-                AxisValueLabel {
-                    if let d = value.as(Date.self) {
-                        Text(tickLabel(d)).font(.caption2).foregroundStyle(Theme.inkSecondary)
-                    }
-                }
-            }
-        }
-        .chartXSelection(value: selection.chartBinding)
-        .chartOverlay { proxy in
-            SelectionCursor(selection: selection, proxy: proxy, level: cursorLevel)
-        }
-    }
-
-    /// Height of the drawn line at `date`, in display units: observed before
-    /// the forecast starts, then the forecast.
-    private func cursorLevel(_ date: Date) -> Double? {
-        let cut = forecast.total.first?.date ?? forecast.issued
-        let m = date < cut ? forecast.observed.value(at: date, maxGap: 1_200) : forecast.total.value(at: date, maxGap: 1_200)
-        return m.map(unit.fromMeters)
-    }
-
-    private func legend(compact: Bool) -> some View {
-        HStack(spacing: 14) {
-            LegendSwatch(color: Theme.harbor, label: "Observed")
-            LegendSwatch(color: Theme.swell, label: compact ? "Forecast" : "Forecast · 80% range")
-            LegendSwatch(color: Theme.tideTable, label: "Tide table", dashed: true)
-        }
-    }
-
-    private func accessibilitySummary(_ domain: ClosedRange<Date>) -> String {
-        guard let peak = forecast.total.sliced(from: domain.lowerBound, to: domain.upperBound).maximum else { return "" }
-        return "Highest forecast \(Fmt.length(peak.value, unit)) at \(Fmt.smartTime(peak.date, in: tz))."
+    /// High/low tags fade out between 3.5 and 4 days on screen.
+    static func tagOpacity(length: Double) -> Double {
+        Swift.min(Swift.max((4 * 86_400 - length) / (0.5 * 86_400), 0), 1)
     }
 }
 
-/// Two-line high/low tag: forecast (or observed) time and height over the
-/// tide-table time and height.
-private struct ExtremeTag: View {
-    let label: TideLineChart.ExtremeLabel
+// MARK: - Drawing
+
+extension ChartData {
+    private enum Thin { case envelope, max, min }
+
+    func draw(_ ctx: inout GraphicsContext, size: CGSize, start: Double, length: Double, selection: Double?) {
+        let w = size.width
+        let plotH = size.height - Self.axisHeight
+        guard w > 1, plotH > 1, length > 0 else { return }
+        let end = start + length
+        let (lo, hi) = yRange(length: length)
+        // Lines thin out past four days on screen, where each tide is only a
+        // few pixels wide, so the month reads as tides rather than a block.
+        let thin = CGFloat(Swift.min(Swift.max(log2(length / (4 * 86_400)), 0), 3) / 3)
+        func weight(_ w: CGFloat) -> CGFloat { w - (w - 0.9) * thin }
+        let xs = Double(w) / length
+        func X(_ t: Double) -> CGFloat { CGFloat((t - start) * xs) }
+        func Y(_ v: Double) -> CGFloat { plotH - CGFloat((v - lo) / (hi - lo)) * plotH }
+
+        // Gridlines and tick labels.
+        for tick in ticks(start: start, end: end, length: length) {
+            let x = X(tick.t)
+            var grid = Path()
+            grid.move(to: CGPoint(x: x, y: 0))
+            grid.addLine(to: CGPoint(x: x, y: plotH))
+            ctx.stroke(grid, with: .color(Theme.hairline), lineWidth: 0.75)
+            let label = ctx.resolve(Text(tick.label).font(.caption2).foregroundStyle(Theme.inkSecondary))
+            ctx.draw(label, at: CGPoint(x: x + 3, y: plotH + 5), anchor: .topLeading)
+        }
+
+        var plot = ctx
+        plot.clip(to: Path(CGRect(x: 0, y: 0, width: w, height: plotH)))
+
+        // Water fill under the line.
+        let waterPts = points(water, start: start, end: end, w: w, X: X, Y: Y, thin: .envelope)
+        if waterPts.count > 1 {
+            var area = Path()
+            area.move(to: CGPoint(x: waterPts[0].x, y: plotH))
+            area.addLine(to: waterPts[0])
+            Self.appendCurve(&area, waterPts)
+            area.addLine(to: CGPoint(x: waterPts[waterPts.count - 1].x, y: plotH))
+            area.closeSubpath()
+            plot.fill(area, with: .color(Theme.harbor.opacity(0.08)))
+        }
+
+        // 80 % range.
+        let up = points(upper, start: start, end: end, w: w, X: X, Y: Y, thin: .max)
+        let dn = points(lower, start: start, end: end, w: w, X: X, Y: Y, thin: .min)
+        if up.count > 1, dn.count > 1 {
+            var band = Path()
+            band.move(to: up[0])
+            Self.appendCurve(&band, up)
+            band.addLine(to: dn[dn.count - 1])
+            Self.appendCurve(&band, dn, reversed: true)
+            band.closeSubpath()
+            plot.fill(band, with: .color(Theme.swellBand.opacity(0.24)))
+        }
+
+        // Tide table, dashed; the dashes stay put on the data as it moves.
+        let tablePts = points(table, start: start, end: end, w: w, X: X, Y: Y, thin: .envelope)
+        if tablePts.count > 1 {
+            var p = Path()
+            p.move(to: tablePts[0])
+            Self.appendCurve(&p, tablePts)
+            let phase = (Double(tablePts[0].x) - Double(X(bounds.lowerBound))).truncatingRemainder(dividingBy: 6)
+            plot.stroke(p, with: .color(Theme.tideTable.opacity(1 - 0.4 * thin)),
+                        style: StrokeStyle(lineWidth: weight(1.2) * (1 - 0.3 * thin), dash: [3, 3], dashPhase: CGFloat(-phase)))
+        }
+
+        func stroke(_ line: ChartLine, _ color: Color, _ width: CGFloat) {
+            let pts = points(line, start: start, end: end, w: w, X: X, Y: Y, thin: .envelope)
+            guard pts.count > 1 else { return }
+            var p = Path()
+            p.move(to: pts[0])
+            Self.appendCurve(&p, pts)
+            plot.stroke(p, with: .color(color), style: StrokeStyle(lineWidth: weight(width), lineCap: .round, lineJoin: .round))
+        }
+        stroke(forecast, Theme.swell, 2.2)
+        stroke(observed.prefix(before: cut + 1), Theme.harbor, 2.4)
+
+        // Weather-forecast horizon.
+        if let o = outlook, o >= start - length * 0.2, o <= end {
+            let x = X(o)
+            var rule = Path()
+            rule.move(to: CGPoint(x: x, y: 0))
+            rule.addLine(to: CGPoint(x: x, y: plotH))
+            plot.stroke(rule, with: .color(Theme.inkSecondary.opacity(0.35)), style: StrokeStyle(lineWidth: 1, dash: [2, 3]))
+            let text = plot.resolve(Text("Outlook ›").font(.caption2.weight(.medium)).foregroundStyle(Theme.inkSecondary))
+            let tw = text.measure(in: size).width
+            plot.draw(text, at: CGPoint(x: Swift.min(Swift.max(x + 4, 0), w - tw), y: 0), anchor: .topLeading)
+        }
+
+        // Now.
+        if now >= start - length * 0.05, now <= end + length * 0.05 {
+            let x = X(now)
+            var rule = Path()
+            rule.move(to: CGPoint(x: x, y: 0))
+            rule.addLine(to: CGPoint(x: x, y: plotH))
+            plot.stroke(rule, with: .color(Theme.ink.opacity(0.18)), lineWidth: 1)
+            if let v = nowLevel {
+                let c = CGPoint(x: x, y: Y(v))
+                plot.fill(Self.circle(c, 9), with: .color(Theme.harbor.opacity(0.15)))
+                plot.fill(Self.circle(c, 5), with: .color(Theme.surface))
+                plot.stroke(Self.circle(c, 4.3), with: .color(Theme.harbor), lineWidth: 2.4)
+            }
+        }
+
+        // High/low tags.
+        let alpha = Self.tagOpacity(length: length)
+        if alpha > 0 {
+            var tagCtx = ctx
+            tagCtx.opacity = alpha
+            drawTags(&tagCtx, start: start, end: end, length: length, w: w, plotH: plotH, X: X, Y: Y)
+        }
+
+        // Scrub cursor.
+        if let s = selection, s >= start, s <= end {
+            let x = X(s)
+            var rule = Path()
+            rule.move(to: CGPoint(x: x, y: 0))
+            rule.addLine(to: CGPoint(x: x, y: plotH))
+            plot.stroke(rule, with: .color(Theme.ink.opacity(0.35)), lineWidth: 1)
+            if let v = level(at: s) {
+                let c = CGPoint(x: x, y: Y(v))
+                plot.fill(Self.circle(c, 5), with: .color(Theme.surface))
+                plot.stroke(Self.circle(c, 4), with: .color(Theme.ink.opacity(0.7)), lineWidth: 2)
+            }
+        }
+    }
+
+    private func drawTags(_ ctx: inout GraphicsContext, start: Double, end: Double, length: Double, w: CGFloat,
+                          plotH: CGFloat, X: (Double) -> CGFloat, Y: (Double) -> CGFloat) {
+        let margin = length * 0.15
+        var i = lowerTagIndex(start - margin)
+        while i < tags.count, tags[i].t <= end + margin {
+            let tag = tags[i]
+            i += 1
+            let p = CGPoint(x: X(tag.t), y: Y(tag.v))
+            let texts = tag.lines.map { l in
+                ctx.resolve(Text(l.text).font(.caption2.monospacedDigit()).fontWeight(l.bold ? .semibold : .regular)
+                    .foregroundStyle(l.color))
+            }
+            let sizes = texts.map { $0.measure(in: CGSize(width: 300, height: 40)) }
+            let blockW = sizes.map(\.width).max() ?? 0
+            let blockH = sizes.reduce(0) { $0 + $1.height }
+            var top = tag.high ? p.y - 3 - 2.5 - blockH : p.y + 3 + 2.5
+            top = Swift.min(Swift.max(top, 0), plotH - blockH)
+            // Kept inside the chart while its point is, then sliding off with it.
+            let left = Swift.min(Swift.max(p.x - blockW / 2, Swift.min(0, p.x)), Swift.max(w - blockW, p.x - blockW))
+            var y = top
+            for (text, size) in zip(texts, sizes) {
+                ctx.draw(text, at: CGPoint(x: left + (blockW - size.width) / 2, y: y), anchor: .topLeading)
+                y += size.height
+            }
+            ctx.fill(Self.circle(p, 2.4), with: .color(tag.dot))
+        }
+    }
+
+    private func lowerTagIndex(_ x: Double) -> Int {
+        var lo = 0, hi = tags.count
+        while lo < hi { let m = (lo + hi) / 2; if tags[m].t < x { lo = m + 1 } else { hi = m } }
+        return lo
+    }
+
+    /// The visible slice in screen points; more than ~1.5 points a pixel is
+    /// thinned per pixel column (keeping each column's extremes, so peaks
+    /// survive any zoom).
+    private func points(_ line: ChartLine, start: Double, end: Double, w: CGFloat,
+                        X: (Double) -> CGFloat, Y: (Double) -> CGFloat, thin: Thin) -> [CGPoint] {
+        let r = line.covering(start, end)
+        guard !r.isEmpty else { return [] }
+        if Double(r.count) <= Double(w) * 1.5 {
+            return r.map { CGPoint(x: X(line.t[$0]), y: Y(line.v[$0])) }
+        }
+        var out: [CGPoint] = []
+        out.reserveCapacity(Int(w) * 2 + 4)
+        var column = Int.min
+        var minI = r.lowerBound, maxI = r.lowerBound
+        func flush() {
+            guard column != Int.min else { return }
+            switch thin {
+            case .envelope:
+                let a = Swift.min(minI, maxI), b = Swift.max(minI, maxI)
+                out.append(CGPoint(x: X(line.t[a]), y: Y(line.v[a])))
+                if b != a { out.append(CGPoint(x: X(line.t[b]), y: Y(line.v[b]))) }
+            case .max: out.append(CGPoint(x: X(line.t[maxI]), y: Y(line.v[maxI])))
+            case .min: out.append(CGPoint(x: X(line.t[minI]), y: Y(line.v[minI])))
+            }
+        }
+        for i in r {
+            let c = Int(X(line.t[i]).rounded(.down))
+            if c != column {
+                flush()
+                column = c
+                minI = i
+                maxI = i
+            } else {
+                if line.v[i] < line.v[minI] { minI = i }
+                if line.v[i] > line.v[maxI] { maxI = i }
+            }
+        }
+        flush()
+        return out
+    }
+
+    static func circle(_ c: CGPoint, _ r: CGFloat) -> Path {
+        Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r))
+    }
+
+    /// Continues `path` (already at the first point, or the last when
+    /// `reversed`) through `pts`: a monotone cubic where points are sparse
+    /// enough to show corners, straight segments where they're dense.
+    static func appendCurve(_ path: inout Path, _ pts: [CGPoint], reversed: Bool = false) {
+        let n = pts.count
+        guard n > 1 else { return }
+        let sparse = n >= 3 && (pts[n - 1].x - pts[0].x) / CGFloat(n - 1) > 3
+        guard sparse else {
+            if reversed { for i in stride(from: n - 2, through: 0, by: -1) { path.addLine(to: pts[i]) } }
+            else { for i in 1..<n { path.addLine(to: pts[i]) } }
+            return
+        }
+        // Fritsch–Carlson tangents: no overshoot past the data's highs and lows.
+        var d = [CGFloat](repeating: 0, count: n - 1), m = [CGFloat](repeating: 0, count: n)
+        for i in 0..<(n - 1) {
+            let dx = pts[i + 1].x - pts[i].x
+            d[i] = dx > 0 ? (pts[i + 1].y - pts[i].y) / dx : 0
+        }
+        m[0] = d[0]
+        m[n - 1] = d[n - 2]
+        for i in 1..<(n - 1) {
+            if d[i - 1] * d[i] <= 0 { m[i] = 0; continue }
+            let h0 = pts[i].x - pts[i - 1].x, h1 = pts[i + 1].x - pts[i].x
+            m[i] = 3 * (h0 + h1) / ((2 * h1 + h0) / d[i - 1] + (h1 + 2 * h0) / d[i])
+        }
+        func controls(_ i: Int) -> (CGPoint, CGPoint) {
+            let h = (pts[i + 1].x - pts[i].x) / 3
+            return (CGPoint(x: pts[i].x + h, y: pts[i].y + m[i] * h),
+                    CGPoint(x: pts[i + 1].x - h, y: pts[i + 1].y - m[i + 1] * h))
+        }
+        if reversed {
+            for i in stride(from: n - 2, through: 0, by: -1) {
+                let (c1, c2) = controls(i)
+                path.addCurve(to: pts[i], control1: c2, control2: c1)
+            }
+        } else {
+            for i in 0..<(n - 1) {
+                let (c1, c2) = controls(i)
+                path.addCurve(to: pts[i + 1], control1: c1, control2: c2)
+            }
+        }
+    }
+}
+
+// MARK: - Views
+
+/// The drawn chart plus its gestures. Reads the viewport, so it (alone)
+/// redraws on every pan, pinch, scrub or animation frame.
+private struct TideCanvas: View {
+    let data: ChartData
+    let viewport: ChartViewport
+    let forecast: WaterLevelForecast
     let unit: LengthUnit
     let tz: TimeZone
-
-    private func line(_ e: TideExtreme) -> String {
-        let t = e.date.formatted(Date.FormatStyle(timeZone: tz).hour(.defaultDigits(amPM: .narrow)).minute())
-        return "\(t) \(Fmt.length(e.height, unit))"
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            if let actual = label.actual {
-                Text(line(actual))
-                    .fontWeight(.semibold)
-                    .foregroundStyle(label.observed ? Theme.harbor : Theme.swellText)
-            }
-            if label.showsTable {
-                Text(line(label.table))
-                    .foregroundStyle(Theme.inkSecondary)
-            }
-        }
-        .font(.caption2.monospacedDigit())
-        .lineLimit(1)
-        .fixedSize()
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityText)
-    }
-
-    private var accessibilityText: String {
-        let name = label.kind == .high ? "High" : "Low"
-        let table = "tide table \(Fmt.time(label.table.date, in: tz)), \(Fmt.length(label.table.height, unit))"
-        guard let a = label.actual else { return "\(name): \(table)" }
-        let src = label.observed ? "observed" : "forecast"
-        guard label.showsTable else { return "\(name): \(src) \(Fmt.time(a.date, in: tz)), \(Fmt.length(a.height, unit)), near the tide table" }
-        return "\(name): \(src) \(Fmt.time(a.date, in: tz)), \(Fmt.length(a.height, unit)); \(table)"
-    }
-}
-
-/// The row under the chart, with a "Now" button once the reader has scrolled
-/// now out of view. Its own view so only this row, not the whole chart,
-/// re-renders while scrolling; `content` learns whether the button shows.
-private struct ScrollHome<Content: View>: View {
-    let scroll: ScrollState
-    let home: Date
-    let now: Date
-    let length: TimeInterval
-    let enabled: Bool
     let reduceMotion: Bool
-    @ViewBuilder let content: (_ away: Bool) -> Content
 
     var body: some View {
-        let position = scroll.x
-        let away = enabled && !(position...(position + length)).contains(now)
+        let start = viewport.start, length = viewport.length, selection = viewport.selection
+        Canvas { ctx, size in
+            data.draw(&ctx, size: size, start: start, length: length, selection: selection)
+        }
+        .overlay(ChartGestureLayer(viewport: viewport))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Water level chart")
+        .accessibilityValue(summary(start: start, length: length))
+        .accessibilityHint("Pinch to zoom. Swipe up or down to move through time.")
+        .accessibilityZoomAction { action in
+            let c = start + length / 2, l = action.direction == .zoomIn ? length / 2 : length * 2
+            viewport.animate(toStart: c - l / 2, length: l, duration: reduceMotion ? 0 : 0.3)
+        }
+        .accessibilityAdjustableAction { dir in
+            let step = length / 2 * (dir == .increment ? 1 : -1)
+            viewport.animate(toStart: start + step, length: length, duration: reduceMotion ? 0 : 0.3)
+        }
+    }
+
+    private func summary(start: Double, length: Double) -> String {
+        let a = Date(timeIntervalSince1970: start), b = Date(timeIntervalSince1970: start + length)
+        var out = "Showing \(Fmt.smartTime(a, in: tz)) to \(Fmt.smartTime(b, in: tz))."
+        let r = data.forecast.covering(start, start + length)
+        if let i = r.max(by: { data.forecast.v[$0] < data.forecast.v[$1] }) {
+            let t = Date(timeIntervalSince1970: data.forecast.t[i])
+            out += " Highest forecast \(Fmt.length(unit.toMeters(data.forecast.v[i]), unit)) at \(Fmt.smartTime(t, in: tz))."
+        }
+        return out
+    }
+}
+
+/// Legend (or the scrub readout) and the Now button once now is off screen.
+private struct ChartFooter: View {
+    let data: ChartData
+    let viewport: ChartViewport
+    let forecast: WaterLevelForecast
+    let unit: LengthUnit
+    let tz: TimeZone
+    let home: (TideLineChart.Window) -> Double
+    let reduceMotion: Bool
+
+    var body: some View {
+        let start = viewport.start, length = viewport.length
+        let away = viewport.canPan && !(start...(start + length)).contains(data.now)
         HStack(spacing: 8) {
-            content(away)
+            if let s = viewport.selection {
+                SelectionReadout(forecast: forecast, date: Date(timeIntervalSince1970: s), unit: unit, tz: tz)
+            } else {
+                HStack(spacing: 14) {
+                    LegendSwatch(color: Theme.harbor, label: "Observed")
+                    LegendSwatch(color: Theme.swell, label: away ? "Forecast" : "Forecast · 80% range")
+                    LegendSwatch(color: Theme.tideTable, label: "Tide table", dashed: true)
+                }
+            }
             Spacer(minLength: 0)
-            if away { button }
+            if away {
+                Button {
+                    let w = viewport.window
+                    let target = abs(length - TideLineChart.presetLength(w)) < 60 ? home(w) : data.now - length * 0.25
+                    viewport.animate(toStart: target, length: length, duration: reduceMotion ? 0 : 0.45)
+                } label: {
+                    Label("Now", systemImage: data.now < start ? "chevron.left" : "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Theme.neutralWash, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.harbor)
+                .accessibilityLabel("Scroll back to now")
+            }
         }
     }
-
-    private var button: some View {
-        Button {
-            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.35)) { scroll.jump(to: home) }
-        } label: {
-            Label("Now", systemImage: now < scroll.x ? "chevron.left" : "chevron.right")
-                .font(.caption.weight(.semibold))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(Theme.neutralWash, in: Capsule())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(Theme.harbor)
-        .accessibilityLabel("Scroll back to now")
-    }
 }
 
-/// The chart's scroll position, observed only where it's shown. The chart
-/// reads and writes `chartX`, which nothing observes, so scrolling doesn't
-/// re-run `TideLineChart.body` (and rebuild thousands of marks) every frame;
-/// `x` mirrors it for `ScrollHome`. The chart only re-reads its position when
-/// its view updates, so moving it from code goes through `jump(to:)`, which
-/// also bumps `jumps`, a value `TideLineChart.body` does observe, or, for a
-/// new window or forecast, through `rehome` during that body pass.
-@Observable
-private final class ScrollState {
-    struct Home: Equatable {
-        let window: TideLineChart.Window
-        let issued: Date
-    }
+/// Day / 2 days / Week / Month: highlights the preset nearest the zoom, and
+/// eases to a preset's length and starting point when tapped.
+private struct RangePicker: View {
+    let viewport: ChartViewport
+    let home: (TideLineChart.Window) -> Double
+    let reduceMotion: Bool
 
-    @ObservationIgnored private var chartX: Date
-    /// The position the chart last read. It scrolls only when the binding's
-    /// value differs from this, not from where it has since been scrolled.
-    @ObservationIgnored private var lastRead: Date
-    private(set) var x: Date
-    private(set) var jumps = 0
-    @ObservationIgnored private var home: Home
-
-    init(_ x: Date, home: Home) {
-        chartX = x
-        lastRead = x
-        self.x = x
-        self.home = home
-    }
-
-    /// Moves the chart to `date` when `home` changes, from the body. It has
-    /// to land in the same pass as the window change: one pass later the
-    /// chart's own window animation wins and it stays put. `show(_:)` then
-    /// updates the "Now" row, which can't change during the body.
-    func rehome(_ home: Home, to date: Date) {
-        guard home != self.home else { return }
-        self.home = home
-        chartX = date == lastRead ? date + 0.001 : date
-    }
-
-    func show(_ date: Date) {
-        x = date
-    }
-
-    func jump(to date: Date) {
-        // Jumping back to the value the chart last read would look like no
-        // change to it; a millisecond off is the same place on screen.
-        chartX = date == lastRead ? date + 0.001 : date
-        x = date
-        jumps += 1
-    }
-
-    var chartBinding: Binding<Date> {
-        Binding(get: {
-            self.lastRead = self.chartX
-            return self.chartX
-        }, set: {
-            self.chartX = $0
-            self.x = $0
-        })
-    }
-}
-
-/// The last `Series` built, so a body pass that doesn't change its inputs
-/// (scrubbing, a jump) reuses it. Plain class: storing into it mustn't
-/// invalidate the view.
-private final class SeriesCache {
-    private var key: TideLineChart.SeriesKey?
-    private var value: TideLineChart.Series?
-
-    func series(for key: TideLineChart.SeriesKey) -> TideLineChart.Series? {
-        key == self.key ? value : nil
-    }
-
-    func store(_ series: TideLineChart.Series, for key: TideLineChart.SeriesKey) {
-        self.key = key
-        value = series
-    }
-}
-
-/// The "now" marker riding the tide line.
-private struct NowDot: View {
     var body: some View {
-        ZStack {
-            Circle().fill(Theme.harbor.opacity(0.15)).frame(width: 18, height: 18)
-            Circle().fill(Theme.surface).frame(width: 10, height: 10)
-            Circle().strokeBorder(Theme.harbor, lineWidth: 2.4).frame(width: 11, height: 11)
+        Picker("Chart range", selection: Binding(get: { TideLineChart.tier(for: viewport.length) }, set: { w in
+            viewport.window = w
+            viewport.animate(toStart: home(w), length: TideLineChart.presetLength(w), duration: reduceMotion ? 0 : 0.45)
+        })) {
+            ForEach(TideLineChart.Window.allCases) { Text($0.rawValue).tag($0) }
+        }
+        .pickerStyle(.segmented)
+    }
+}
+
+// MARK: - Gestures
+
+/// UIKit recognizers over the canvas: they report velocity for momentum and
+/// can defer to the page's vertical scroll properly. One-finger horizontal
+/// pan (with momentum), two-finger pinch (zoom about the fingers, and pan
+/// while pinching), touch-and-hold then drag to scrub.
+private struct ChartGestureLayer: UIViewRepresentable {
+    let viewport: ChartViewport
+
+    func makeCoordinator() -> Coordinator { Coordinator(viewport: viewport) }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        view.isMultipleTouchEnabled = true
+        let c = context.coordinator
+        let pan = UIPanGestureRecognizer(target: c, action: #selector(Coordinator.pan(_:)))
+        pan.maximumNumberOfTouches = 1
+        pan.delegate = c
+        let pinch = UIPinchGestureRecognizer(target: c, action: #selector(Coordinator.pinch(_:)))
+        pinch.delegate = c
+        let press = UILongPressGestureRecognizer(target: c, action: #selector(Coordinator.press(_:)))
+        press.minimumPressDuration = 0.25
+        press.allowableMovement = 10
+        press.delegate = c
+        [pan, pinch, press].forEach(view.addGestureRecognizer)
+        c.panRecognizer = pan
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        context.coordinator.viewport = viewport
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var viewport: ChartViewport
+        weak var panRecognizer: UIPanGestureRecognizer?
+        private var panBase = 0.0
+        private var pinchBase = 0.0
+        private var pinchAnchor = 0.0
+        private let haptics = UISelectionFeedbackGenerator()
+
+        init(viewport: ChartViewport) { self.viewport = viewport }
+
+        @objc func pan(_ g: UIPanGestureRecognizer) {
+            guard let v = g.view, v.bounds.width > 0 else { return }
+            let perPoint = viewport.length / Double(v.bounds.width)
+            switch g.state {
+            case .began:
+                viewport.beginInteraction()
+                panBase = viewport.start
+            case .changed:
+                viewport.set(start: panBase - Double(g.translation(in: v).x) * perPoint, length: viewport.length)
+            case .ended:
+                viewport.fling(velocity: -Double(g.velocity(in: v).x) * perPoint)
+            default: break
+            }
+        }
+
+        @objc func pinch(_ g: UIPinchGestureRecognizer) {
+            guard let v = g.view, v.bounds.width > 0, g.numberOfTouches >= 2 || g.state != .changed else { return }
+            let fx = Swift.min(Swift.max(Double(g.location(in: v).x / v.bounds.width), 0), 1)
+            switch g.state {
+            case .began:
+                viewport.beginInteraction()
+                pinchBase = viewport.length
+                pinchAnchor = viewport.start + viewport.length * fx
+            case .changed:
+                // The moment first under the fingers follows them: zoom and pan at once.
+                viewport.zoom(scale: Double(g.scale), from: pinchBase, anchorTime: pinchAnchor, fraction: fx)
+            default: break
+            }
+        }
+
+        @objc func press(_ g: UILongPressGestureRecognizer) {
+            guard let v = g.view, v.bounds.width > 0 else { return }
+            let x = Swift.min(Swift.max(g.location(in: v).x, 0), v.bounds.width)
+            let t = viewport.start + viewport.length * Double(x / v.bounds.width)
+            switch g.state {
+            case .began:
+                viewport.beginInteraction()
+                haptics.selectionChanged()
+                scrollView(of: v)?.isScrollEnabled = false
+                viewport.selection = t
+            case .changed:
+                viewport.selection = t
+            default:
+                viewport.selection = nil
+                scrollView(of: v)?.isScrollEnabled = true
+            }
+        }
+
+        private func scrollView(of v: UIView) -> UIScrollView? {
+            var s = v.superview
+            while let view = s, !(view is UIScrollView) { s = view.superview }
+            return s as? UIScrollView
+        }
+
+        func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+            guard g === panRecognizer, let p = panRecognizer, let v = p.view else { return true }
+            let vel = p.velocity(in: v)
+            return viewport.selection == nil && viewport.canPan && abs(vel.x) > abs(vel.y)
+        }
+
+        /// The page's vertical scroll waits for a horizontal pan to fail.
+        func gestureRecognizer(_ g: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+            g === panRecognizer && other is UIPanGestureRecognizer && other.view is UIScrollView
         }
     }
 }
@@ -634,55 +1002,6 @@ private struct HLine: Shape {
         p.move(to: CGPoint(x: rect.minX, y: rect.midY))
         p.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
         return p
-    }
-}
-
-/// The scrubbed moment, written by the chart's selection gesture. The chart
-/// reads and writes `chartValue`, which nothing observes, so a scrub doesn't
-/// re-run `TideLineChart.body`; `date` mirrors it for the cursor and readout.
-@Observable
-private final class SelectionState {
-    @ObservationIgnored private var chartValue: Date?
-    private(set) var date: Date?
-
-    var chartBinding: Binding<Date?> {
-        Binding(get: { self.chartValue }, set: {
-            self.chartValue = $0
-            self.date = $0
-        })
-    }
-}
-
-/// The scrub line and a dot on the curve, drawn over the chart rather than
-/// as chart marks, so moving them redraws two shapes instead of the chart.
-private struct SelectionCursor: View {
-    let selection: SelectionState
-    let proxy: ChartProxy
-    let level: (Date) -> Double?
-
-    var body: some View {
-        GeometryReader { geo in
-            if let date = selection.date, let anchor = proxy.plotFrame,
-               let x = proxy.position(forX: date) {
-                let plot = geo[anchor]
-                let px = plot.minX + x
-                if px >= plot.minX - 1, px <= plot.maxX + 1 {
-                    Rectangle()
-                        .fill(Theme.ink.opacity(0.35))
-                        .frame(width: 1, height: plot.height)
-                        .position(x: px, y: plot.midY)
-                    if let v = level(date), let y = proxy.position(forY: v) {
-                        Circle()
-                            .fill(Theme.surface)
-                            .overlay(Circle().strokeBorder(Theme.ink.opacity(0.7), lineWidth: 2))
-                            .frame(width: 10, height: 10)
-                            .position(x: px, y: plot.minY + y)
-                    }
-                }
-            }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }
 
@@ -764,3 +1083,4 @@ struct SurgeChartView: View {
         .frame(height: 180)
     }
 }
+
