@@ -126,7 +126,7 @@ struct StationMapView: View {
             }
         }
         .task(id: clock.playing) {
-            if let d = bay.day { await clock.run(day: d, reduceMotion: reduceMotion) }
+            if let d = bay.day { await clock.run(day: d) }
         }
         .onAppear { consumeBayFocus() }
         .onChange(of: env.router.bayFocus) { consumeBayFocus() }

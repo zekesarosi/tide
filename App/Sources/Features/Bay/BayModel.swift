@@ -128,19 +128,12 @@ final class BayClock {
 
     /// Runs while `playing`, looping over the day. Advances on every display
     /// frame by the frame's real duration, so the markers, strip cursor and
-    /// readout move continuously. With Reduce Motion it steps a quarter hour
-    /// at a time instead. Ends when playback stops or the task is cancelled.
-    func run(day: BayDay, reduceMotion: Bool) async {
+    /// readout move continuously. Playback only runs when the reader presses
+    /// Play, and it's small, slow change (discs filling), so it plays the same
+    /// way with Reduce Motion on. Ends when playback stops or the task is cancelled.
+    func run(day: BayDay) async {
         guard playing else { return }
         if time >= day.end - 60 { time = day.start }
-        if reduceMotion {
-            while playing, !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(700))
-                time += 15 * 60
-                if time >= day.end { time = day.start }
-            }
-            return
-        }
         let driver = FrameDriver()
         driver.run { [weak self] dt in
             guard let self, self.playing else { return false }
