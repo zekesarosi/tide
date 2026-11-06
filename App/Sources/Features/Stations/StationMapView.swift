@@ -85,6 +85,16 @@ struct StationMapView: View {
         .navigationTitle("Map")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    env.router.showingGlobe = true
+                } label: {
+                    Label("Globe", systemImage: "globe.americas")
+                        .labelStyle(.titleAndIcon)
+                        .font(.subheadline.weight(.semibold))
+                }
+                .accessibilityLabel("Show the Tide Globe")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 if !inBay {
                     Button {

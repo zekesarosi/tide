@@ -3,9 +3,19 @@ import TideKit
 
 // Usage: tide-cli <NOAA station id | search text> [datum] [hours]
 //        tide-cli bay      (San Francisco Bay offsets vs 9414290)
+//        tide-cli basis <start> <hours> <step s> <M2,S2,...> <out.csv>   (harmonic basis for offline analysis)
+//        tide-cli bay-point <lat> <lon> [hours]   (SF Bay mesh model at a point; $TIDEMESH or App/Resources/Bay/sfbay.tidemesh)
 // Env:   TIDE_CONTACT (required by api.weather.gov), OPEN_METEO_API_KEY, UK_ADMIRALTY_KEY
 
 let args = CommandLine.arguments.dropFirst()
+if args.first == "basis" {
+    runBasis(Array(args.dropFirst()))
+    exit(0)
+}
+if args.first == "bay-point" {
+    runBayPoint(Array(args.dropFirst()))
+    exit(0)
+}
 let query = args.first ?? "8518750"
 let datum = args.dropFirst().first.flatMap { TidalDatum(rawValue: $0.uppercased()) } ?? .mllw
 let hours = args.dropFirst(2).first.flatMap(Int.init) ?? 120

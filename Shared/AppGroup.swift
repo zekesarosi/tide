@@ -73,6 +73,16 @@ enum AppGroup {
         return String(url.path.dropFirst())
     }
 
+    /// `tideforecast://globe` opens the Tide Globe.
+    static func isGlobeURL(_ url: URL) -> Bool {
+        url.scheme == urlScheme && url.host == "globe"
+    }
+
+    /// `tideforecast://bay3d` opens San Francisco Bay in 3D.
+    static func isBaySceneURL(_ url: URL) -> Bool {
+        url.scheme == urlScheme && url.host == "bay3d"
+    }
+
     static func stationID(from url: URL) -> String? {
         guard url.scheme == urlScheme, url.host == "station" else { return nil }
         let id = String(url.path.dropFirst())

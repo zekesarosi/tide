@@ -13,6 +13,7 @@ struct BayPanel: View {
     let onDetails: () -> Void
 
     @Environment(StationStore.self) private var store
+    @Environment(AppEnvironment.self) private var env
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -22,6 +23,20 @@ struct BayPanel: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Theme.ink)
                 Spacer()
+                Button {
+                    env.router.showingBayScene = true
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "cube").font(.caption.weight(.bold))
+                        Text("3D")
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .frame(minHeight: 30)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.harbor)
+                .padding(.trailing, 8)
+                .accessibilityLabel("Show the bay's currents in 3D")
                 Button(action: onDetails) {
                     HStack(spacing: 3) {
                         Text("Timing")

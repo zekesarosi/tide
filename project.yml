@@ -4,7 +4,7 @@ name: TideForecast
 options:
   bundleIdPrefix: com.example
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "18.0"
   developmentLanguage: en
   createIntermediateGroups: true
 configFiles:
@@ -21,7 +21,7 @@ targets:
   TideForecast:
     type: application
     platform: iOS
-    deploymentTarget: "17.0"
+    deploymentTarget: "18.0"
     sources:
       - path: App/Sources
       - path: App/Resources
@@ -59,6 +59,8 @@ targets:
         TideAdmiraltyKey: $(UK_ADMIRALTY_KEY)
         TideAppGroup: group.$(TIDE_BUNDLE_ID)
         TideKeychainGroup: $(AppIdentifierPrefix)$(TIDE_BUNDLE_ID).shared
+        # SF Bay live layer (sfbay.residual.deflate); empty = tide only, no network.
+        TideBayLiveURL: $(TIDE_BAY_LIVE_URL)
     settings:
       base:
         PRODUCT_NAME: TideForecast
@@ -75,7 +77,7 @@ targets:
   TideWidgets:
     type: app-extension
     platform: iOS
-    deploymentTarget: "17.0"
+    deploymentTarget: "18.0"
     sources:
       - path: Widgets/Sources
       - path: Shared

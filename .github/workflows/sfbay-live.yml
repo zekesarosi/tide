@@ -1,0 +1,101 @@
+# San Francisco Bay live layer: turns NOAA's latest SFBOFS forecast into the
+# non-tidal residual the app adds to its on-device tide model (docs/SFBAY.md),
+# and publishes it as the asset sfbay.residual.deflate on the release tagged
+# sfbay-live. SFBOFS cycles run at 03/09/15/21 UTC and finish ~1 h 20 m later;
+# this runs ~1 h 40 m after each. A failed run leaves the previous asset in
+# place, and the app keeps working from its cache or the tide alone.
+name: SF Bay live residual
+
+on:
+  schedule:
+    - cron: "40 4,10,16,22 * * *"
+  workflow_dispatch:
+    inputs:
+      cycle:
+        description: "SFBOFS cycle YYYYMMDDHH (default: latest complete)"
+        required: false
+        default: ""
+
+concurrency:
+  group: sfbay-live
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build residual
+    runs-on: ubuntu-latest
+    container: swift:6.1
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python deps
+        run: |
+          for _ in 1 2 3; do
+            apt-get update -q && apt-get install -y -q --no-install-recommends python3-numpy python3-netcdf4 && break
+            sleep 15
+          done
+          python3 -c "import numpy, netCDF4"
+
+      - name: Cache tide-cli build
+        uses: actions/cache@v4
+        with:
+          path: build/spm-live
+          key: spm-live-${{ runner.os }}-${{ hashFiles('TideKit/Package.swift', 'TideKit/Sources/**') }}
+          restore-keys: spm-live-${{ runner.os }}-
+
+      - name: Build tide-cli
+        run: swift build --package-path TideKit --scratch-path build/spm-live --product tide-cli
+
+      - name: Build residual
+        env:
+          CYCLE: ${{ inputs.cycle }}
+        run: |
+          args=(--out out --tide-cli build/spm-live/debug/tide-cli)
+          if [ -n "$CYCLE" ]; then args+=(--cycle "$CYCLE"); fi
+          for i in 1 2; do
+            python3 scripts/sfbay/live_residual.py "${args[@]}" && exit 0
+            echo "attempt $i failed; retrying in 2 min"
+            sleep 120
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sfbay-residual
+          path: out/sfbay.residual.deflate
+          retention-days: 2
+          if-no-files-found: error
+
+  publish:
+    name: Publish to release sfbay-live
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sfbay-residual
+
+      - name: Upload asset
+        run: |
+          gh release view sfbay-live >/dev/null 2>&1 || \
+            gh release create sfbay-live --prerelease --title "SF Bay live residual" \
+              --notes "Rolling NOAA SFBOFS non-tidal residual for the app's San Francisco Bay model (docs/SFBAY.md). Replaced four times a day by .github/workflows/sfbay-live.yml."
+          for _ in 1 2 3; do
+            gh release upload sfbay-live sfbay.residual.deflate --clobber && exit 0
+            sleep 20
+          done
+          exit 1

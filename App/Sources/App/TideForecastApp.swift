@@ -47,7 +47,20 @@ struct RootView: View {
         }
         .tint(Theme.harbor)
         // Widgets open `tideforecast://station/<id>`.
+        .fullScreenCover(isPresented: $router.showingGlobe) { GlobeView() }
+        .task { if GlobeBenchmark.isEnabled { env.router.showingGlobe = true } }
+        .fullScreenCover(isPresented: $router.showingBayScene) { BaySceneView() }
+        .task { if BaySceneBenchmark.isEnabled || UserDefaults.standard.bool(forKey: "BaySceneOpen") { env.router.showingBayScene = true } }
         .onOpenURL { url in
+            if AppGroup.isGlobeURL(url) {
+                env.router.showingGlobe = true
+                return
+            }
+            if AppGroup.isBaySceneURL(url) {
+                env.router.showingGlobe = false
+                env.router.showingBayScene = true
+                return
+            }
             if let code = AppGroup.bayStationCode(from: url) {
                 env.router.showBay(code: code.isEmpty ? nil : code)
                 return
@@ -72,6 +85,8 @@ struct RootView: View {
         guard let id = pendingStationID, let station = store.station(id: id) else { return }
         pendingStationID = nil
         env.router.tab = .stations
+        env.router.showingGlobe = false
+        env.router.showingBayScene = false
         var path = NavigationPath()
         path.append(station)
         stationPath = path

@@ -65,6 +65,10 @@ final class AppRouter {
     var bayFocus: BayFocus?
     /// A station to open in the Tides tab (e.g. from a notification).
     var openStationID: String?
+    /// The Tide Globe, shown full screen over any tab.
+    var showingGlobe = false
+    /// San Francisco Bay in 3D, shown full screen over any tab.
+    var showingBayScene = false
 
     func showBay(code: String? = nil) {
         bayFocus = BayFocus(code: code)

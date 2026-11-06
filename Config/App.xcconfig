@@ -20,5 +20,11 @@ UK_ADMIRALTY_KEY =
 
 DEVELOPMENT_TEAM =
 
+// San Francisco Bay live layer: URL of the sfbay.residual.deflate asset that
+// .github/workflows/sfbay-live.yml publishes. Empty = the Bay model shows the
+// tide alone and never downloads. Set it in Secrets.xcconfig (see the example
+// there for writing a URL in an .xcconfig).
+TIDE_BAY_LIVE_URL =
+
 // Local, untracked overrides (see Secrets.example.xcconfig).
 #include? "Secrets.xcconfig"

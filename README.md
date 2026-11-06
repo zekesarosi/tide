@@ -1,6 +1,6 @@
 # Tide & Surge — advanced tide and storm-surge forecasting for iPhone
 
-An iPhone app (SwiftUI, iOS 17+) that forecasts **total water level** at
+An iPhone app (SwiftUI, iOS 18+) that forecasts **total water level** at
 coastal and Great Lakes gauges:
 
 ```
@@ -44,6 +44,12 @@ Highlights:
   (9414290), averaged over 59 days of on-device predictions with the spread,
   plus the observed lag from two weeks of gauge data. Bay station screens
   and `tideforecast://bay` fly the map there.
+* **Tide Globe.** The whole ocean's astronomical tide on a 3D Earth, rendered
+  in Metal. Every pixel sums eight constituents from the NASA GOT4.10c atlas
+  (0.5°) under the real Sun and Moon, with real sidereal time for the stars. High water sweeps around
+  the amphidromes. Isolate M2, S2, N2, K1 or O1 to see each one's cotidal
+  lines, and tap the sea to read the tide there, with a link to the nearest
+  gauge. Open it from the Map tab or `tideforecast://globe`.
 * **Context.** NWS coastal flood and storm surge alerts are shown. When a tropical
   cyclone is within 1,000 km, uncertainty is inflated and a warning appears.
   Statistical surge models are unreliable in hurricanes, so the app defers to NHC.
@@ -72,12 +78,14 @@ TideKit/                 Swift package: all forecasting logic (no UI), runs on i
     Providers/           NOAA CO-OPS, NWS alerts, NWPS, NHC, Open-Meteo, DFO IWLS, UK Admiralty
     Networking/          API client (auth, retries, pacing, caching), credential stores
     Services/            ForecastService: parallel fetch + graceful degradation
+    Globe/               Sun/Moon ephemeris, global ocean tide atlas reader
   Sources/tide-cli/      Command-line harness that runs the live pipeline
   Sources/tide-analyze/  Retrospective analysis of a past week (hindcasts, attribution)
-  Tests/TideKitTests/    50 tests incl. validation against NOAA fixtures
+  Tests/TideKitTests/    68 tests incl. validation against NOAA fixtures and JPL Horizons
 App/                     SwiftUI iPhone app
 Widgets/                 WidgetKit extension (home + lock screen), App Intents station picker
 Shared/                  App Group helpers + Slack Water theme, compiled into both app and widget
+scripts/pack_globe_data.py  Packs the GOT4.10c atlas and Natural Earth land into App/Resources/Globe
 Config/                  xcconfig (identity, keys) — Secrets.xcconfig is git-ignored
 project.yml              XcodeGen spec (generates TideForecast.xcodeproj)
 docs/ARCHITECTURE.md     Data sources, auth, and the forecasting method in detail

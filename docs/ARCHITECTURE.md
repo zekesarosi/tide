@@ -199,3 +199,28 @@ hourly, the reference data (harmonic constants, datums, flood levels) almost nev
 * Thirty days of training data seldom include an extreme event, so responses to rare
   storms are extrapolated linearly. Official guidance, when blended, mitigates this.
 * Wave set-up and run-up aren't modelled; total water level here means still water.
+
+## Tide Globe
+
+The globe shows the open-ocean astronomical tide everywhere at once, from
+NASA GSFC's GOT4.10c atlas (R. Ray 2013; public domain). `scripts/pack_globe_data.py`
+packs the eight major constituents (M2 S2 N2 K2 K1 O1 P1 Q1) on its 0.5° grid as
+float16 pairs (H cos G, H sin G). That's 8.3 MB, in `App/Resources/Globe/got410c.tideatlas`.
+Ocean values are carried four cells onto land so sampling holds up at the coast.
+The script also packs Natural Earth 1:50m land as quantised rings (`land50m.rings`).
+
+`TideAtlas` (TideKit) reads the atlas. Its `phasors(at:)` gives f·cos(V+u) and
+f·sin(V+u) for each constituent with the same node factors as `HarmonicPredictor`,
+so the tide anywhere is a dot product with the grid:
+`η = Σ f·[H cos G · cos(V+u) + H sin G · sin(V+u)]`. The Metal fragment shader
+evaluates that per pixel from a `texture2d_array`. It also evaluates the time
+derivative, which places the "high water now" crest: the local phase is
+atan2(−η̇/ω̄, η), with ω̄ the amplitude-weighted speed. The CPU path behind a
+tapped point builds a `HarmonicPredictor` from the bilinear constants there.
+
+`Ephemeris` gives the Sun and Moon (truncated Meeus, ~0.1° for the Moon) and
+Greenwich sidereal time. Tests pin it to JPL Horizons. Another test checks that the atlas tide just
+outside the Golden Gate tracks NOAA's San Francisco prediction (r > 0.97, within an hour).
+
+GOT4.10c is an open-ocean, altimetry-based model: harbours, estuaries and
+shallow shelves are smoothed at 0.5°. Station forecasts never use it.
