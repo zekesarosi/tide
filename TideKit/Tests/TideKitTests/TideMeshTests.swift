@@ -303,4 +303,33 @@ final class TideMeshTests: XCTestCase {
         }
         let HarmonicConstituents: [C]
     }
+
+    /// `data` with its constants ID written at header offset 20: the CRC-32
+    /// of everything after the triangle block.
+    static func stamped(_ data: Data, k: Int = 2, n: Int = 5, t: Int = 4, corrupt: Bool = false) -> Data {
+        var d = data
+        let tail = 32 + 8 * k + 16 * (n + t)
+        var crc = CRC32.checksum(d.subdata(in: tail..<d.count))
+        if corrupt { crc &+= 1 }
+        withUnsafeBytes(of: crc.littleEndian) { d.replaceSubrange(20..<24, with: $0) }
+        return d
+    }
+
+    func testConstantsID() throws {
+        XCTAssertEqual(try TideMesh(data: Self.syntheticData()).constantsID, 0)
+        let mesh = try TideMesh(data: Self.stamped(Self.syntheticData()))
+        XCTAssertNotEqual(mesh.constantsID, 0)
+        XCTAssertThrowsError(try TideMesh(data: Self.stamped(Self.syntheticData(), corrupt: true))) {
+            if case .constantsIDMismatch = $0 as? TideMesh.LoadError {} else { XCTFail("expected constantsIDMismatch, got \($0)") }
+        }
+    }
+
+    /// The shipped file records its constants ID.
+    func testShippedMeshRecordsConstantsID() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("App/Resources/Bay/sfbay.tidemesh")
+        guard let data = try? Data(contentsOf: url) else { throw XCTSkip("no shipped tidemesh") }
+        XCTAssertNotEqual(try TideMesh(data: data).constantsID, 0)
+    }
 }

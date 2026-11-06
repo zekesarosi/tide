@@ -16,6 +16,7 @@ public struct TideMesh: Sendable {
         case unknownConstituent(String)
         case truncated
         case meshIDMismatch(stored: UInt32, computed: UInt32)
+        case constantsIDMismatch(stored: UInt32, computed: UInt32)
         case badTriangle(Int)
     }
 
@@ -27,6 +28,10 @@ public struct TideMesh: Sendable {
     public let constituentNames: [String]
     public let nodeCount: Int, triangleCount: Int
     public let meshID: UInt32
+    /// CRC-32 of everything after the triangle block (the mean and constant
+    /// blocks), so a live residual can prove it was computed against these
+    /// exact constants. 0 in files written before it was recorded.
+    public let constantsID: UInt32
     public let longitudes: [Float], latitudes: [Float], depths: [Float]
     /// SFBOFS node index of each node (0-based).
     public let sourceNodeIndices: [UInt32]
@@ -48,11 +53,11 @@ public struct TideMesh: Sendable {
         let storage = Data(data) // rebased to index 0
         let total = storage.count
         guard total >= Self.headerSize else { throw LoadError.truncated }
-        let header = try storage.withUnsafeBytes { raw -> (k: Int, n: Int, t: Int, id: UInt32) in
+        let header = try storage.withUnsafeBytes { raw -> (k: Int, n: Int, t: Int, id: UInt32, constants: UInt32) in
             guard raw[0] == 0x54, raw[1] == 0x4D, raw[2] == 0x53, raw[3] == 0x48 else { throw LoadError.badMagic } // "TMSH"
             let version = Int(raw.leU16(4))
             guard version == 1 else { throw LoadError.unsupportedVersion(version) }
-            return (Int(raw.leU16(6)), Int(raw.leU32(8)), Int(raw.leU32(12)), raw.leU32(16))
+            return (Int(raw.leU16(6)), Int(raw.leU32(8)), Int(raw.leU32(12)), raw.leU32(16), raw.leU32(20))
         }
         let (k, n, t) = (header.k, header.n, header.t)
         guard k <= Self.maxConstituents, n >= 3, t >= 1 else { throw LoadError.badHeader }
@@ -79,6 +84,10 @@ public struct TideMesh: Sendable {
 
         let computed = storage.withUnsafeBytes { CRC32.checksum(UnsafeRawBufferPointer(rebasing: $0[nodeOffset..<meanOffset])) }
         guard computed == header.id else { throw LoadError.meshIDMismatch(stored: header.id, computed: computed) }
+        if header.constants != 0 {
+            let c = storage.withUnsafeBytes { CRC32.checksum(UnsafeRawBufferPointer(rebasing: $0[meanOffset..<end])) }
+            guard c == header.constants else { throw LoadError.constantsIDMismatch(stored: header.constants, computed: c) }
+        }
 
         var lons = [Float](repeating: 0, count: n), lats = lons, deps = lons
         var src = [UInt32](repeating: 0, count: n)
@@ -104,6 +113,7 @@ public struct TideMesh: Sendable {
         nodeCount = n
         triangleCount = t
         meshID = header.id
+        constantsID = header.constants
         longitudes = lons; latitudes = lats; depths = deps
         sourceNodeIndices = src
         triangles = tris

@@ -39,7 +39,8 @@ San Pablo Bay, Suisun and the Delta come later, in the same format.
 | nodeCount N | u32 |
 | triangleCount T | u32 |
 | meshID | u32: CRC-32 (IEEE) of the node block followed by the triangle block, as stored |
-| reserved | 12 bytes, zero |
+| constantsID | u32: CRC-32 of everything after the triangle block (the mean and constant blocks); 0 in files that predate it |
+| reserved | 8 bytes, zero |
 | names | K × 8 bytes ASCII, space padded (TideKit `ConstituentCatalog` names) |
 | node block | N × { f32 longitude, f32 latitude, f32 depth (m, positive down, model `h`), u32 SFBOFS node index (0-based) } |
 | triangle block | T × { u32 a, u32 b, u32 c (node indices, counter-clockwise in lon/lat), u32 SFBOFS element index } |
@@ -66,7 +67,8 @@ After decompression:
 | start | f64 unix seconds, valid time of frame 0 |
 | step | f64 seconds between frames (3600) |
 | cycle | f64 unix seconds of the SFBOFS cycle it came from |
-| reserved | 8 bytes, zero |
+| constantsID | u32: the tidemesh constantsID it was computed against |
+| reserved | 4 bytes, zero |
 | frames | F × N × { f16 zeta, f16 depth-mean u, f16 depth-mean v, f16 surface u, f16 surface v, f16 0, f16 0, f16 0 } |
 
 Each value is the model **minus** the tidemesh harmonic prediction
@@ -74,6 +76,11 @@ Each value is the model **minus** the tidemesh harmonic prediction
 the cycle's nowcast start (cycle − 6 h) to its last forecast hour (cycle + 48 h),
 so F = 55. Total water and flow = harmonic prediction + residual, linearly
 interpolated in time. Outside the frames, use the harmonic prediction alone.
+A residual is only valid for the constants it was computed against: when the
+app's tidemesh records a constantsID, a residual with a different (or no)
+constantsID is rejected and the app shows the tide alone until the next run.
+Refitting the model without changing the mesh keeps the meshID but changes
+the constantsID.
 Published by `.github/workflows/sfbay-live.yml` as the asset `sfbay.residual.deflate`
 on the GitHub release tagged `sfbay-live`. The app reads its URL from Info.plist
 key `TideBayLiveURL` and works fully offline without it.

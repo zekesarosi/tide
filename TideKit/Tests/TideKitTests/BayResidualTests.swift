@@ -15,14 +15,14 @@ final class BayResidualTests: XCTestCase {
         [0.125 * Double(f) + 0.25 * x, 0.5 * y, -0.25 * Double(f), 0.25 * x + 0.125, 0.0625 * y]
     }
 
-    static func syntheticData(frames: Int = frames, nodeCount: Int = M.unit.count, meshID: UInt32, version: UInt16 = 1) -> Data {
+    static func syntheticData(frames: Int = frames, nodeCount: Int = M.unit.count, meshID: UInt32, version: UInt16 = 1, constantsID: UInt32 = 0) -> Data {
         var d = Data("TRES".utf8)
         func u16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
         func u32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
         func f64(_ v: Double) { withUnsafeBytes(of: v.bitPattern.littleEndian) { d.append(contentsOf: $0) } }
         u16(version); u16(UInt16(frames)); u32(UInt32(nodeCount)); u32(meshID)
         f64(start.timeIntervalSince1970); f64(step); f64(start.timeIntervalSince1970 + 6 * 3_600)
-        d.append(Data(count: 8))
+        u32(constantsID); d.append(Data(count: 4))
         for f in 0..<frames {
             for p in M.unit {
                 for v in values(f, p.x, p.y) + [0, 0, 0] { u16(M.half(Float(v))) }
@@ -111,5 +111,23 @@ final class BayResidualTests: XCTestCase {
         }
         XCTAssertNil(r.sample(in: mesh, latitude: M.lat0 - 0.5, longitude: M.lon0, at: t))
         XCTAssertNil(r.waterLevel(in: mesh, latitude: M.lat0 - 0.5, longitude: M.lon0, at: t))
+    }
+
+    /// A mesh that records its constants ID only accepts residuals computed
+    /// against those constants; older meshes (ID 0) accept any.
+    func testConstantsIDGuardsAgainstRefittedModels() throws {
+        let stamped = try TideMesh(data: TideMeshTests.stamped(M.syntheticData()))
+        XCTAssertNotEqual(stamped.constantsID, 0)
+        let id = stamped.constantsID
+        XCTAssertNoThrow(try BayResidual(data: Self.syntheticData(meshID: stamped.meshID, constantsID: id), mesh: stamped))
+        func error(_ d: Data) -> BayResidual.LoadError? {
+            do { _ = try BayResidual(data: d, mesh: stamped); return nil } catch { return error as? BayResidual.LoadError }
+        }
+        XCTAssertEqual(error(Self.syntheticData(meshID: stamped.meshID, constantsID: id &+ 1)), .constantsMismatch(expected: id, found: id &+ 1))
+        XCTAssertEqual(error(Self.syntheticData(meshID: stamped.meshID)), .constantsMismatch(expected: id, found: 0))
+        // An unstamped (older) mesh takes residuals with or without the ID.
+        let old = try mesh()
+        XCTAssertEqual(old.constantsID, 0)
+        XCTAssertNoThrow(try BayResidual(data: Self.syntheticData(meshID: old.meshID, constantsID: 1234), mesh: old))
     }
 }

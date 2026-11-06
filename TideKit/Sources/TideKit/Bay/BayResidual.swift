@@ -17,6 +17,10 @@ public struct BayResidual: Sendable {
         /// The file was made for a different mesh than the one in the app.
         case nodeCountMismatch(expected: Int, found: Int)
         case meshMismatch(expected: UInt32, found: UInt32)
+        /// The file was computed against different harmonic constants than
+        /// the app's (e.g. an app update shipped a refitted model), so
+        /// adding it to the app's tide would be wrong.
+        case constantsMismatch(expected: UInt32, found: UInt32)
     }
 
     /// One node's (or point's) residual at an instant.
@@ -53,6 +57,8 @@ public struct BayResidual: Sendable {
     public let cycle: Date
     public let nodeCount: Int
     public let meshID: UInt32
+    /// The `TideMesh.constantsID` it was computed against (0 if not recorded).
+    public let constantsID: UInt32
     /// F × N × 16 bytes, exactly as stored.
     private let frames: Data
 
@@ -61,23 +67,28 @@ public struct BayResidual: Sendable {
 
     /// Parses decompressed `sfbay.residual` bytes and checks they belong to `mesh`.
     public init(data: Data, mesh: TideMesh) throws {
-        try self.init(data: data, nodeCount: mesh.nodeCount, meshID: mesh.meshID)
+        try self.init(data: data, nodeCount: mesh.nodeCount, meshID: mesh.meshID, constantsID: mesh.constantsID)
     }
 
-    /// Parses decompressed bytes against an expected node count and mesh ID.
-    public init(data: Data, nodeCount expectedNodes: Int, meshID expectedID: UInt32) throws {
+    /// Parses decompressed bytes against an expected node count, mesh ID and,
+    /// when the mesh records one (non-zero), constants ID: then the residual
+    /// must carry the same ID, so one without it is rejected too.
+    public init(data: Data, nodeCount expectedNodes: Int, meshID expectedID: UInt32, constantsID expectedConstants: UInt32 = 0) throws {
         let header = Data(data.prefix(Self.headerSize))
         guard header.count == Self.headerSize else { throw LoadError.truncated }
-        let h = try header.withUnsafeBytes { raw -> (f: Int, n: Int, id: UInt32, start: Double, step: Double, cycle: Double) in
+        let h = try header.withUnsafeBytes { raw -> (f: Int, n: Int, id: UInt32, start: Double, step: Double, cycle: Double, constants: UInt32) in
             guard Array(raw[0..<4]) == Self.magic else { throw LoadError.badHeader }
             let version = Int(raw.leU16(4))
             guard version == 1 else { throw LoadError.unsupportedVersion(version) }
             func f64(_ o: Int) -> Double { Double(bitPattern: UInt64(raw.leU32(o)) | UInt64(raw.leU32(o + 4)) << 32) }
-            return (Int(raw.leU16(6)), Int(raw.leU32(8)), raw.leU32(12), f64(16), f64(24), f64(32))
+            return (Int(raw.leU16(6)), Int(raw.leU32(8)), raw.leU32(12), f64(16), f64(24), f64(32), raw.leU32(40))
         }
         let (f, n, id) = (h.f, h.n, h.id)
         guard n == expectedNodes else { throw LoadError.nodeCountMismatch(expected: expectedNodes, found: n) }
         guard id == expectedID else { throw LoadError.meshMismatch(expected: expectedID, found: id) }
+        if expectedConstants != 0, h.constants != expectedConstants {
+            throw LoadError.constantsMismatch(expected: expectedConstants, found: h.constants)
+        }
         let (start, step, cycle) = (h.start, h.step, h.cycle)
         guard f > 0, start.isFinite, cycle.isFinite, step.isFinite, step > 0 else { throw LoadError.badTiming }
         let size = f * n * Self.bytesPerNode
@@ -87,6 +98,7 @@ public struct BayResidual: Sendable {
         frameCount = f
         nodeCount = n
         meshID = id
+        constantsID = h.constants
         self.start = Date(timeIntervalSince1970: start)
         self.step = step
         self.cycle = Date(timeIntervalSince1970: cycle)

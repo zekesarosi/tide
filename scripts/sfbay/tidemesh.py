@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sfbaymesh as sm  # noqa: E402
 
 MAGIC = b"TMSH"
-HEADER = struct.Struct("<4sHHIII12x")  # magic, version, K, N, T, meshID, reserved
+HEADER = struct.Struct("<4sHHIIII8x")  # magic, version, K, N, T, meshID, constantsID, reserved
 FIELDS = ("zeta", "ua", "va", "us", "vs")  # mean block order
 
 
@@ -36,27 +36,29 @@ def write(path, names, region, z0, const):
     for arr in (mean, zeta, cur("ua", "va"), cur("us", "vs")):
         if not np.isfinite(arr.astype(np.float32)).all():
             raise ValueError("non-finite value (f16 overflow or NaN)")
+    tail = mean.tobytes() + zeta.tobytes() + cur("ua", "va").tobytes() + cur("us", "vs").tobytes()
+    constants_id = zlib.crc32(tail) & 0xFFFFFFFF  # everything after the triangle block
     with open(path + ".tmp", "wb") as f:
-        f.write(HEADER.pack(MAGIC, 1, K, N, T, mesh_id))
+        f.write(HEADER.pack(MAGIC, 1, K, N, T, mesh_id, constants_id))
         f.write(b"".join(n.encode("ascii").ljust(8, b" ") for n in names))
         f.write(node)
         f.write(tri)
-        f.write(mean.tobytes())
-        f.write(zeta.tobytes())
-        f.write(cur("ua", "va").tobytes())
-        f.write(cur("us", "vs").tobytes())
+        f.write(tail)
     os.replace(path + ".tmp", path)
     return mesh_id
 
 
 class TideMesh:
     def __init__(self, data: bytes):
-        magic, version, K, N, T, mesh_id = HEADER.unpack_from(data, 0)
+        magic, version, K, N, T, mesh_id, constants_id = HEADER.unpack_from(data, 0)
         if magic != MAGIC or version != 1:
             raise ValueError("not a version 1 tidemesh")
-        if any(data[20:32]):
+        if any(data[24:32]):
             raise ValueError("reserved header bytes are not zero")
-        self.K, self.N, self.T, self.mesh_id = K, N, T, mesh_id
+        self.K, self.N, self.T, self.mesh_id, self.constants_id = K, N, T, mesh_id, constants_id
+        tail = HEADER.size + 8 * K + 16 * (N + T)
+        if constants_id and zlib.crc32(data[tail:]) & 0xFFFFFFFF != constants_id:
+            raise ValueError("constantsID does not match the constant blocks")
         o = HEADER.size
         self.names = [data[o + 8 * i:o + 8 * i + 8].decode("ascii").rstrip(" ") for i in range(K)]
         o += 8 * K

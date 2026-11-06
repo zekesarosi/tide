@@ -53,7 +53,7 @@ FORECAST = 48
 FRAMES = NOWCAST + 1 + FORECAST  # 55
 SF_GAUGE = (37.8063, -122.4659)  # NOAA 9414290 San Francisco (Presidio)
 
-HEADER = struct.Struct("<4sHHIIddd8x")  # 48 bytes
+HEADER = struct.Struct("<4sHHIIdddI4x")  # 48 bytes; the I is the tidemesh constantsID
 
 
 def frame_files():
@@ -67,7 +67,7 @@ def frame_files():
 def read_tidemesh(path):
     """The parts of sfbay.tidemesh the residual needs (docs/SFBAY.md, version 1)."""
     b = open(path, "rb").read()
-    magic, version, k, n, t, mesh_id = struct.unpack_from("<4sHHIII", b, 0)
+    magic, version, k, n, t, mesh_id, constants_id = struct.unpack_from("<4sHHIIII", b, 0)
     if magic != b"TMSH" or version != 1:
         raise SystemExit(f"{path}: not a version-1 tidemesh")
     o = 32
@@ -85,7 +85,11 @@ def read_tidemesh(path):
     o += 8 * k * n
     if o != len(b):
         raise SystemExit(f"{path}: size {len(b)} != expected {o}")
-    return dict(names=names, n=n, mesh_id=mesh_id, lon=nodes["lon"].astype(np.float64),
+    tail = 32 + 8 * k + 16 * (n + t)
+    computed = zlib.crc32(b[tail:]) & 0xFFFFFFFF
+    if constants_id and computed != constants_id:
+        raise SystemExit(f"{path}: constantsID 0x{constants_id:08x} != CRC 0x{computed:08x}")
+    return dict(names=names, n=n, mesh_id=mesh_id, constants_id=computed, lon=nodes["lon"].astype(np.float64),
                 lat=nodes["lat"].astype(np.float64), index=nodes["index"].astype(np.int64),
                 mean=mean, zeta=zeta, dm=dm, sf=sf)
 
@@ -257,7 +261,7 @@ def main():
     frames[..., :5] = to_f16(resid)
 
     os.makedirs(a.out, exist_ok=True)
-    raw = HEADER.pack(b"TRES", 1, FRAMES, tm["n"], tm["mesh_id"], start, STEP, cyc) + frames.tobytes()
+    raw = HEADER.pack(b"TRES", 1, FRAMES, tm["n"], tm["mesh_id"], start, STEP, cyc, tm["constants_id"]) + frames.tobytes()
     comp = zlib.compressobj(9, zlib.DEFLATED, -15)
     wire = comp.compress(raw) + comp.flush()
     with open(os.path.join(a.out, "sfbay.residual"), "wb") as f:
