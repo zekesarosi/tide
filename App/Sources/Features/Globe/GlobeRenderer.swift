@@ -258,7 +258,8 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
 
     func draw(in view: MTKView) {
         let now = CACurrentMediaTime()
-        let dt = min(max(lastFrame.map { now - $0 } ?? 1.0 / 60, 1.0 / 240), 1.0 / 15)
+        let raw: Double = lastFrame.map { now - $0 } ?? 1.0 / 60
+        let dt: Double = min(max(raw, 1.0 / 240), 1.0 / 15)
         lastFrame = now
         benchmark?.step(model: model, camera: &camera, now: now, dt: dt)
         model.advance(dt)
