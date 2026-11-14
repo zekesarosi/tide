@@ -7,7 +7,7 @@ Directions for coding agents working on this repo. See README.md for the project
 ## Build & test
 
 ```sh
-swift test --package-path TideKit          # 68 unit tests, ~10 s, no network
+swift test --package-path TideKit          # 152 unit tests, ~15 s, no network
 xcodegen generate                          # after adding/removing files or editing project.yml
 xcodebuildmcp simulator build-and-run \
   --project-path TideForecast.xcodeproj --scheme TideForecast \
